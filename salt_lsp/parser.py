@@ -52,7 +52,7 @@ class Position:
         return self > other or self == other
 
     def to_lsp_pos(self) -> types.Position:
-        """Convert this position to pygls' native Position type."""
+        """Return a codepoint position; encode it at the document boundary."""
         return types.Position(line=self.line, character=self.col)
 
 
@@ -508,6 +508,15 @@ class Parser:
             self._tree.start = token_start
         if isinstance(token, yaml.StreamEndToken):
             self._tree.end = token_end
+        if isinstance(token, yaml.DocumentStartToken):
+            # Each YAML document starts a fresh traversal, not a continuation
+            # of the previous document's (possibly already closed) mappings.
+            self._breadcrumbs = [self._tree]
+            self._block_starts = []
+            self._next_scalar_as_key = False
+            self._next_token_is_value = False
+            self._unprocessed_tokens = None
+            self._last_start = None
 
         if isinstance(
             token,
@@ -746,6 +755,10 @@ class Parser:
                             col=err.problem_mark.column,
                         )
             return self._tree
+        except yaml.YAMLError as err:
+            # Reader failures (for example NUL or an unpaired surrogate in an
+            # in-progress buffer) are source errors, not protocol failures.
+            log.debug(err)
         return self._tree
 
 
