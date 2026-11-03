@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Salt LSP project settings (the salt section)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "projects": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "#/$defs/project" }
+    }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1, "pattern": "\\S", "not": { "pattern": "\u0000" } },
+    "path": {
+      "$ref": "#/$defs/text",
+      "description": "Literal local path or file URI; relative to the selected project root. No shell/variable expansion."
+    },
+    "paths": { "type": "array", "items": { "$ref": "#/$defs/path" }, "default": [] },
+    "role": { "enum": ["state", "pillar", "state-top", "pillar-top", "generic"] },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "saltVersion": { "enum": ["3006", "3007", "3008"], "default": "3008" },
+        "environment": { "$ref": "#/$defs/text", "default": "base" },
+        "stateRoots": { "$ref": "#/$defs/paths" },
+        "pillarRoots": { "$ref": "#/$defs/paths" },
+        "moduleDirs": { "$ref": "#/$defs/paths" },
+        "fileRoles": {
+          "type": "object",
+          "description": "Exact paths, not globs. Overrides root-based roles.",
+          "propertyNames": { "$ref": "#/$defs/path" },
+          "additionalProperties": { "$ref": "#/$defs/role" },
+          "default": {}
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspaceUri": {
+          "$ref": "#/$defs/text",
+          "pattern": "^file:(//(localhost)?/|/)",
+          "description": "Local editor scope. Optional with absolute root or in a single-folder session."
+        },
+        "root": {
+          "$ref": "#/$defs/path",
+          "description": "Explicit project boundary; relative to workspaceUri. Omit to discover nearest Git root with editor fallback."
+        },
+        "activeProfile": { "$ref": "#/$defs/text", "default": "default" },
+        "profiles": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/text" },
+          "additionalProperties": { "$ref": "#/$defs/profile" },
+          "default": { "default": {} }
+        }
+      }
+    }
+  }
+}

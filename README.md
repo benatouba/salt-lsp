@@ -86,6 +86,17 @@ didOpen, document-symbol, completion, shutdown and exit messages, checks a
 known symbol and deterministic empty completion, and requires a clean exit
 without workspace writes. Each response and process exit has a timeout.
 
+## Project configuration
+
+[Configure projects and active profiles](docs/project-configuration.md) through
+standard LSP initialization options or live settings. Project boundaries are
+separate from state/pillar roots and custom-module directories. Named profiles
+select one Salt version/environment/root set; the visible default is Salt 3008.
+Configure state roots explicitly to enable state-specific assistance—unconfigured
+or ambiguous files are not guessed to be states. Settings never execute Salt,
+templates, or workspace Python. The portable JSON schema ships in
+[`salt_lsp/project.schema.json`](salt_lsp/project.schema.json).
+
 # Clients
 
 ## VSCode
