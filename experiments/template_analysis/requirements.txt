@@ -1,0 +1,4 @@
+# Isolated proof only; not server runtime or packaging dependencies.
+PyYAML==6.0.3
+Jinja2==3.1.6
+MarkupSafe==3.0.4
