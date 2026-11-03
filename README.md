@@ -70,6 +70,14 @@ API version was detected. Old ignored `salt_lsp/data/states.pickle` files are
 never loaded, even if present; do not run the legacy metadata generator to
 start the server. Missing optional metadata cannot prevent initialization.
 
+Document synchronization supports full replacements and sequential incremental
+edits. Source locations use UTF-16 by default, or negotiated UTF-8/UTF-32,
+including non-BMP characters and LF, CRLF, or CR line endings. Closing a document
+discards its buffer analysis; reopening analyzes the new contents. Unsupported
+document URI schemes (such as `untitled:`) receive empty assistance, not errors.
+File URIs decode percent-encoded paths and recognize localhost, drive, and UNC
+forms; Windows filesystem behavior is not yet acceptance-tested.
+
 ### Runtime checks
 
 ```sh

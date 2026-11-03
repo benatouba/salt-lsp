@@ -114,6 +114,8 @@ class SaltServer(LanguageServer):
             id_to_find,
             starting_uri,
         )
+        if not utils.is_valid_file_uri(starting_uri):
+            return None
         if (tree := self.workspace.trees.get(starting_uri)) is None:
             self.logger.error(
                 "Cannot search in '%s', no tree present", starting_uri
@@ -143,7 +145,10 @@ class SaltServer(LanguageServer):
                 continue
 
             if (
-                lsp_range := utils.ast_node_to_range(matching_states[0])
+                lsp_range := utils.ast_node_to_range(
+                    matching_states[0],
+                    self.workspace.get_text_document(str(uri)),
+                )
             ) is not None:
                 self.logger.debug(
                     "found match at '%s', '%s", lsp_range.start, lsp_range.end
@@ -225,7 +230,13 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         salt_server: SaltServer, params: CompletionParams
     ) -> Optional[CompletionList]:
         """Returns completion items."""
+        if not utils.is_valid_file_uri(params.text_document.uri):
+            return None
         if role(params.text_document.uri) not in ("state", "state-top"):
+            return None
+        if (
+            tree := salt_server.workspace.trees.get(params.text_document.uri)
+        ) is None:
             return None
         if (
             role(params.text_document.uri) == "state"
@@ -242,12 +253,11 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                 ],
             )
 
-        if (
-            tree := salt_server.workspace.trees.get(params.text_document.uri)
-        ) is None:
-            return None
-
-        path = utils.construct_path_to_position(tree, params.position)
+        path = utils.construct_path_to_position(
+            tree,
+            params.position,
+            salt_server.workspace.get_text_document(params.text_document.uri),
+        )
         if path and (
             isinstance(path[-1], IncludesNode)
             or role(params.text_document.uri) == "state-top"
@@ -290,14 +300,18 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         salt_server: SaltServer, params: types.DeclarationParams
     ) -> Optional[types.Location]:
         uri = params.text_document.uri
+        if not utils.is_valid_file_uri(uri):
+            return None
         if role(uri) != "state":
             return None
         if (tree := salt_server.workspace.trees.get(uri)) is None:
             return None
-        path = utils.construct_path_to_position(tree, params.position)
+        path = utils.construct_path_to_position(
+            tree, params.position, salt_server.workspace.get_text_document(uri)
+        )
 
         # Going to definition is only handled on requisites ids
-        if not isinstance(path[-1], RequisiteNode):
+        if not path or not isinstance(path[-1], RequisiteNode):
             return None
 
         if (id_to_find := cast(RequisiteNode, path[-1]).reference) is None:
@@ -330,6 +344,8 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     ) -> Optional[
         Union[List[types.DocumentSymbol], List[types.SymbolInformation]]
     ]:
+        if not utils.is_valid_file_uri(params.text_document.uri):
+            return []
         if role(params.text_document.uri) != "state":
             return []
         return salt_server.workspace.document_symbols.get(
