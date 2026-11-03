@@ -1,0 +1,257 @@
+{
+  "python": "3.12",
+  "dependencies": {
+    "PyYAML": "6.0.3",
+    "Jinja2": "3.1.6",
+    "MarkupSafe": "3.0.4"
+  },
+  "fixtures": {
+    "incomplete.sls": {
+      "comparisons": {
+        "raw_yaml": {
+          "accepted": false,
+          "error": "ParserError"
+        },
+        "jinja_syntax": {
+          "accepted": false,
+          "error": "unexpected char \"'\" at 116",
+          "line": 8
+        }
+      },
+      "declarations": [
+        {
+          "kind": "state",
+          "value": "before",
+          "certainty": "literal",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "kind": "function",
+          "value": "test.nop",
+          "certainty": "literal",
+          "start": 10,
+          "end": 18
+        },
+        {
+          "kind": "state",
+          "value": "broken",
+          "certainty": "partial",
+          "start": 23,
+          "end": 29
+        },
+        {
+          "kind": "function",
+          "value": "file.managed",
+          "certainty": "partial",
+          "start": 33,
+          "end": 45
+        },
+        {
+          "kind": "state",
+          "value": "unfinished",
+          "certainty": "literal",
+          "start": 72,
+          "end": 82
+        },
+        {
+          "kind": "function",
+          "value": "test.nop",
+          "certainty": "literal",
+          "start": 86,
+          "end": 94
+        },
+        {
+          "kind": "state",
+          "value": "after",
+          "certainty": "literal",
+          "start": 122,
+          "end": 127
+        },
+        {
+          "kind": "function",
+          "value": "service.running",
+          "certainty": "literal",
+          "start": 131,
+          "end": 146
+        }
+      ],
+      "references": [],
+      "unknowns": {
+        "expression": 1,
+        "incomplete_template": 1,
+        "malformed_yaml": 1
+      }
+    },
+    "mixed.sls": {
+      "comparisons": {
+        "raw_yaml": {
+          "accepted": false,
+          "error": "ScannerError"
+        },
+        "jinja_syntax": {
+          "accepted": true
+        }
+      },
+      "declarations": [
+        {
+          "kind": "state",
+          "value": "conditional",
+          "certainty": "conditional",
+          "start": 154,
+          "end": 165
+        },
+        {
+          "kind": "function",
+          "value": "pkg.installed",
+          "certainty": "conditional",
+          "start": 169,
+          "end": 182
+        },
+        {
+          "kind": "function",
+          "value": "service.running",
+          "certainty": "conditional",
+          "start": 331,
+          "end": 346
+        },
+        {
+          "kind": "state",
+          "value": "after",
+          "certainty": "literal",
+          "start": 380,
+          "end": 385
+        },
+        {
+          "kind": "function",
+          "value": "test.nop",
+          "certainty": "literal",
+          "start": 389,
+          "end": 397
+        }
+      ],
+      "references": [
+        "map.jinja",
+        "lib.jinja",
+        "fragment.jinja",
+        "common"
+      ],
+      "unknowns": {
+        "control": 7,
+        "expression": 3,
+        "generated_key": 1
+      }
+    },
+    "nested.sls": {
+      "comparisons": {
+        "raw_yaml": {
+          "accepted": false,
+          "error": "ScannerError"
+        },
+        "jinja_syntax": {
+          "accepted": true
+        }
+      },
+      "declarations": [
+        {
+          "kind": "state",
+          "value": "nested",
+          "certainty": "conditional",
+          "start": 41,
+          "end": 47
+        },
+        {
+          "kind": "function",
+          "value": "file.managed",
+          "certainty": "conditional",
+          "start": 51,
+          "end": 63
+        },
+        {
+          "kind": "state",
+          "value": "outside",
+          "certainty": "literal",
+          "start": 265,
+          "end": 272
+        },
+        {
+          "kind": "function",
+          "value": "test.nop",
+          "certainty": "literal",
+          "start": 276,
+          "end": 284
+        }
+      ],
+      "references": [],
+      "unknowns": {
+        "control": 4,
+        "expression": 1,
+        "malformed_yaml": 1
+      }
+    },
+    "plain.sls": {
+      "comparisons": {
+        "raw_yaml": {
+          "accepted": true
+        },
+        "jinja_syntax": {
+          "accepted": true
+        }
+      },
+      "declarations": [
+        {
+          "kind": "state",
+          "value": "café-😀",
+          "certainty": "literal",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "kind": "function",
+          "value": "file.managed",
+          "certainty": "literal",
+          "start": 10,
+          "end": 22
+        }
+      ],
+      "references": [],
+      "unknowns": {}
+    },
+    "sentinel.sls": {
+      "comparisons": {
+        "raw_yaml": {
+          "accepted": false,
+          "error": "ScannerError"
+        },
+        "jinja_syntax": {
+          "accepted": true
+        }
+      },
+      "declarations": [
+        {
+          "kind": "state",
+          "value": "safe",
+          "certainty": "literal",
+          "start": 231,
+          "end": 235
+        },
+        {
+          "kind": "function",
+          "value": "test.nop",
+          "certainty": "literal",
+          "start": 239,
+          "end": 247
+        }
+      ],
+      "references": [
+        "workspace_probe.py",
+        "workspace_probe.py"
+      ],
+      "unknowns": {
+        "control": 3,
+        "expression": 2,
+        "unsupported_yaml": 2
+      }
+    }
+  }
+}

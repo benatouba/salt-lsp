@@ -1,0 +1,3 @@
+#!/bin/sh
+# Intentional side effect: only the positive-control test may execute this.
+printf 'Salt invoked' > "$PROOF_SENTINEL"
