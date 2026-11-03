@@ -5,6 +5,7 @@ The default command is this interpreter's ``-m salt_lsp``.
 """
 
 import importlib.util
+from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,13 @@ def smoke(command):
         Path(sys.prefix).resolve()
     ), f"expected an installed artifact, not a source checkout: {package_path}"
     assert not (package_path / "data" / "states.pickle").exists()
+    schema = json.loads(
+        files("salt_lsp").joinpath("project.schema.json").read_text()
+    )
+    assert (
+        schema["$defs"]["profile"]["properties"]["saltVersion"]["default"]
+        == "3008"
+    )
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
@@ -88,6 +96,18 @@ def smoke(command):
                     {
                         "processId": os.getpid(),
                         "rootUri": root.as_uri(),
+                        "initializationOptions": {
+                            "salt": {
+                                "projects": [
+                                    {
+                                        "root": root.as_uri(),
+                                        "profiles": {
+                                            "default": {"stateRoots": ["."]}
+                                        },
+                                    }
+                                ]
+                            }
+                        },
                         "capabilities": {},
                     },
                     1,
@@ -130,8 +150,44 @@ def smoke(command):
                     3,
                 )
                 assert response(3) == {"isIncomplete": False, "items": []}
-                send("shutdown", request_id=4)
-                assert response(4) is None
+                send("salt/projectContext", {"uri": uri}, 4)
+                context = response(4)
+                assert context["saltVersion"] == "3008"
+                assert context["versionSource"] == "default"
+                assert context["projectRoot"] == root.as_uri()
+                assert context["stateRoots"] == [root.as_uri()]
+                assert context["fileRole"] == "state"
+                send(
+                    "workspace/didChangeConfiguration",
+                    {
+                        "settings": {
+                            "salt": {
+                                "projects": [
+                                    {
+                                        "root": root.as_uri(),
+                                        "activeProfile": "next",
+                                        "profiles": {
+                                            "next": {
+                                                "saltVersion": "3007",
+                                                "environment": "dev",
+                                                "stateRoots": ["."],
+                                            }
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                )
+                send("salt/projectContext", {"uri": uri}, 5)
+                updated = response(5)
+                assert updated["saltVersion"] == "3007"
+                assert updated["versionSource"] == "configured"
+                assert updated["activeProfile"] == "next"
+                assert updated["environment"] == "dev"
+                assert updated["revision"] > context["revision"]
+                send("shutdown", request_id=6)
+                assert response(6) is None
                 send("exit")
                 assert process.wait(timeout=15) == 0
                 assert not list(
@@ -150,7 +206,7 @@ def smoke(command):
                 process.stdin.close()
                 process.stdout.close()
     print(
-        f"PASS installed stdio initialize/open/symbols/completion/shutdown: {command}"
+        f"PASS installed stdio initialize/open/symbols/completion/profiles/shutdown: {command}"
     )
 
 
