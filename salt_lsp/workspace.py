@@ -12,7 +12,7 @@ from pygls.protocol import LanguageServerProtocol
 from pygls.workspace import Workspace
 
 from salt_lsp.base_types import CompletionsDict, SLS_LANGUAGE_ID
-from salt_lsp.utils import UriDict, FileUri, get_top
+from salt_lsp.utils import UriDict, FileUri, get_top, is_valid_file_uri
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
 
@@ -67,6 +67,7 @@ class SlsFileWorkspace(Workspace):
     def _resolve_includes(
         self, text_document_uri: Union[str, FileUri]
     ) -> None:
+        self._includes[text_document_uri] = []
         if (
             (tree := self._trees[text_document_uri]) is None
             or tree.includes is None
@@ -131,7 +132,7 @@ class SlsFileWorkspace(Workspace):
         self._trees[uri] = tree
 
         self._document_symbols[uri] = tree_to_document_symbols(
-            tree, self._state_name_completions
+            tree, self._state_name_completions, self.get_text_document(uri)
         )
 
         self._resolve_includes(text_document.uri)
@@ -164,17 +165,30 @@ class SlsFileWorkspace(Workspace):
         text_document: types.VersionedTextDocumentIdentifier,
         change: types.TextDocumentContentChangeEvent,
     ) -> None:
+        if not is_valid_file_uri(text_document.uri):
+            return
+        current = self.text_documents.get(text_document.uri)
+        if current is None or (
+            current.version is not None
+            and text_document.version < current.version
+        ):
+            return
         super().update_text_document(text_document, change)
         self._update_document(text_document)
 
     def remove_text_document(self, doc_uri: str) -> None:
+        if not is_valid_file_uri(doc_uri):
+            return
         super().remove_text_document(doc_uri)
-        self._document_symbols.pop(FileUri(doc_uri))
-        self._trees.pop(FileUri(doc_uri))
+        self._document_symbols.pop(FileUri(doc_uri), None)
+        self._trees.pop(FileUri(doc_uri), None)
+        self._includes.pop(FileUri(doc_uri), None)
 
     def put_text_document(
         self, text_document: types.TextDocumentItem, notebook_uri=None
     ) -> None:
+        if not is_valid_file_uri(text_document.uri):
+            return
         super().put_text_document(text_document, notebook_uri=notebook_uri)
         self._update_document(text_document)
 

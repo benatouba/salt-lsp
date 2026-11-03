@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 import os
 import os.path
+import re
 import shlex
 import subprocess
 from typing import (
@@ -19,9 +20,10 @@ from typing import (
     TypeVar,
     Union,
 )
-from urllib.parse import urlparse, ParseResult
+from urllib.parse import urlparse, unquote, quote
 
 from lsprotocol.types import Position, Range
+from pygls.workspace import TextDocument
 
 from salt_lsp import parser
 from salt_lsp.parser import AstNode, Tree
@@ -78,13 +80,22 @@ def get_sls_includes(path: str) -> List[str]:
     return sls_files
 
 
-def construct_path_to_position(tree: Tree, pos: Position) -> List[AstNode]:
+def construct_path_to_position(
+    tree: Tree, pos: Position, document: Optional[TextDocument] = None
+) -> List[AstNode]:
+    """Find cursor context, decoding negotiated units when given a document."""
+    if document is not None and 0 <= pos.line < len(document.lines):
+        pos = document.position_codec.position_from_client_units(
+            document.lines, Position(pos.line, pos.character)
+        )
     found_node = None
     parser_pos = parser.Position(line=pos.line, col=pos.character)
 
     def visitor(node: AstNode) -> bool:
-        if node.start <= parser_pos and (
-            node.end is None or parser_pos <= node.end
+        if (
+            node.start is not None
+            and node.start <= parser_pos
+            and (node.end is None or parser_pos <= node.end)
         ):
             nonlocal found_node
             found_node = node
@@ -129,23 +140,61 @@ Uri = NewType("Uri", str)
 
 
 class FileUri:
-    """Simple class for handling file:// URIs"""
+    """Canonical file URI and decoded path, including drive and UNC forms.
+
+    Filesystem paths are quoted, not URL-parsed; encoded URI paths are decoded
+    exactly once. Drive URI paths retain their leading slash on POSIX hosts.
+    """
+
+    _uri: str
+    _path: str
 
     def __init__(self, uri: Union[str, Uri, FileUri]) -> None:
-        self._parse_res: ParseResult = (
-            uri._parse_res if isinstance(uri, FileUri) else urlparse(uri)
-        )
-        if self._parse_res.scheme not in ("", "file"):
-            raise ValueError(f"Invalid uri scheme {self._parse_res.scheme}")
-        if self._parse_res.scheme == "":
-            self._parse_res = urlparse("file://" + self._parse_res.path)
+        if isinstance(uri, FileUri):
+            self._uri, self._path = uri._uri, uri._path
+            return
+        # Paths are not URLs: literal %, # and ? must survive a round trip.
+        drive_path = bool(re.match(r"^[A-Za-z]:[\\/]", uri))
+        parsed = urlparse(uri) if not drive_path else None
+        authority = ""
+        if parsed is not None and parsed.scheme:
+            if parsed.scheme != "file":
+                raise ValueError(f"Invalid uri scheme {parsed.scheme}")
+            if parsed.query or parsed.fragment:
+                raise ValueError(
+                    "File URIs cannot contain queries or fragments"
+                )
+            authority = parsed.netloc
+            if authority.lower() == "localhost":
+                authority = ""
+            path = unquote(parsed.path)
+        else:
+            path = (
+                uri.replace("\\", "/")
+                if drive_path or uri.startswith("\\\\")
+                else uri
+            )
+            if path.startswith("//"):
+                authority, _, tail = path[2:].partition("/")
+                path = "/" + tail
+            elif drive_path:
+                path = "/" + path
+            elif not path.startswith("/"):
+                path = os.path.abspath(path)
+        if "\x00" in path or "\x00" in authority:
+            raise ValueError("NUL in file URI")
+        path = path or "/"
+        self._uri = "file://" + authority + quote(path, safe="/:")
+        self._path = ("//" + authority if authority else "") + path
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", self._path):
+            self._path = self._path[1:]
 
     @property
     def path(self) -> str:
-        return self._parse_res.path
+        return self._path
 
     def __str__(self) -> str:
-        return self._parse_res.geturl()
+        return self._uri
 
 
 U = Union[Uri, FileUri, str]
@@ -188,12 +237,21 @@ def is_valid_file_uri(uri: str) -> bool:
         return False
 
 
-def ast_node_to_range(node: AstNode) -> Optional[Range]:
+def ast_node_to_range(
+    node: AstNode, document: Optional[TextDocument] = None
+) -> Optional[Range]:
     """
     Converts a AstNode to a Range spanning from the node's starts to its end.
 
     If the node's start or end are None, then None is returned.
+    Pass the target document at LSP boundaries to encode character units.
+    Without a document, the range retains parser (Unicode codepoint) units.
     """
     if node.start is None or node.end is None:
         return None
-    return Range(start=node.start.to_lsp_pos(), end=node.end.to_lsp_pos())
+    result = Range(start=node.start.to_lsp_pos(), end=node.end.to_lsp_pos())
+    return (
+        document.position_codec.range_to_client_units(document.lines, result)
+        if document is not None
+        else result
+    )

@@ -8,6 +8,7 @@ import itertools
 from typing import Callable, Dict, List, Sequence, TypedDict, cast
 
 from lsprotocol import types
+from pygls.workspace import TextDocument
 
 from salt_lsp.parser import (
     AstNode,
@@ -71,7 +72,7 @@ def _get_doc_from_module_name(
         return None
 
     if "." in mod_name:
-        mod_base_name, submod_name = mod_name.split(".")
+        mod_base_name, submod_name = mod_name.split(".", 1)
         completer = state_completions.get(mod_base_name)
         if completer is None:
             return None
@@ -196,7 +197,9 @@ class Visitor:
 
 
 def tree_to_document_symbols(
-    tree: Tree, state_completions: CompletionsDict
+    tree: Tree,
+    state_completions: CompletionsDict,
+    document: Optional[TextDocument] = None,
 ) -> List[types.DocumentSymbol]:
 
     res = []
@@ -213,4 +216,20 @@ def tree_to_document_symbols(
 
         res += visitor.document_symbols
 
+    if document is not None:
+
+        def convert(symbol: types.DocumentSymbol) -> None:
+            symbol.range = document.position_codec.range_to_client_units(
+                document.lines, symbol.range
+            )
+            symbol.selection_range = (
+                document.position_codec.range_to_client_units(
+                    document.lines, symbol.selection_range
+                )
+            )
+            for child in symbol.children or []:
+                convert(child)
+
+        for symbol in res:
+            convert(symbol)
     return res

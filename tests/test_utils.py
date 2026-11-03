@@ -25,6 +25,37 @@ def test_last_element_of_empty_range():
 
 
 class TestFileUri:
+    @pytest.mark.parametrize(
+        "uri,path,canonical",
+        [
+            (
+                "file:///tmp/a%20b%23%C3%A9%25.sls",
+                "/tmp/a b#é%.sls",
+                "file:///tmp/a%20b%23%C3%A9%25.sls",
+            ),
+            (
+                "/tmp/a b#é%.sls",
+                "/tmp/a b#é%.sls",
+                "file:///tmp/a%20b%23%C3%A9%25.sls",
+            ),
+            ("file://localhost/tmp/a%20b", "/tmp/a b", "file:///tmp/a%20b"),
+            (
+                "file:///C:/Salt/a%20b.sls",
+                "C:/Salt/a b.sls" if os.name == "nt" else "/C:/Salt/a b.sls",
+                "file:///C:/Salt/a%20b.sls",
+            ),
+            (
+                "file://server/share/a%20b.sls",
+                "//server/share/a b.sls",
+                "file://server/share/a%20b.sls",
+            ),
+        ],
+    )
+    def test_encoded_and_platform_forms(self, uri, path, canonical):
+        assert FileUri(uri).path.replace("\\", "/") == path
+        assert str(FileUri(uri)) == canonical
+        assert str(FileUri(FileUri(uri).path)) == canonical
+
     def test_file_uri_construction(self):
         path = "/path/to/file"
 
