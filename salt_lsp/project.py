@@ -66,6 +66,15 @@ class ProjectModel:
         self._projects: list[tuple[Path, ProjectContext]] = []
         self._discovery_profiles: dict[Path, dict] = {}
 
+    @property
+    def project_roots(self) -> tuple[Path, ...]:
+        """Configured boundaries, including projects outside editor folders.
+
+        Execution selectors also include editor folders and the current
+        discovered context. These paths are boundaries, never trust grants.
+        """
+        return tuple(context.project_root for _, context in self._projects)
+
     def configure(self, settings: object, folders: Iterable[str]) -> list[str]:
         """Replace explicit settings. Relative paths are literal, not shell text."""
         folders = list(folders)

@@ -25,6 +25,7 @@ from pygls.lsp.server import LanguageServer
 
 from salt_lsp import utils
 from salt_lsp.project import ProjectModel
+from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
@@ -48,6 +49,18 @@ class SaltServer(LanguageServer):
         self.logger: logging.Logger = logging.getLogger()
         self._state_names: List[str] = []
         self.projects = ProjectModel()
+        self.tools = ToolService(
+            lambda uri: self.workspace.project_context(uri),
+            lambda: [
+                *self.projects.project_roots,
+                *(utils.FileUri(uri).path for uri in self.workspace.folders),
+                *(
+                    [utils.FileUri(self.workspace.root_uri).path]
+                    if self.workspace.root_uri
+                    else []
+                ),
+            ],
+        )
 
     @property
     def workspace(self) -> SlsFileWorkspace:
@@ -87,10 +100,9 @@ class SaltServer(LanguageServer):
         if last_match is None:
             self.logger.debug(
                 "expected to find whitespace before the position (%d, %d) "
-                "but got no regex match for the document: %s",
+                "but got no regex match",
                 params.position.line,
                 params.position.character,
-                contents,
             )
             return []
         state_name = contents[last_match.span()[1] : ind - 1]
@@ -182,6 +194,24 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         context = server.workspace.project_context(params.uri)
         return context.to_lsp() if context else None
 
+    @server.feature("salt/toolStatus")
+    def tool_status(params):
+        return server.tools.inspect(params.uri, params.tool)
+
+    @server.feature("salt/toolProbe")
+    async def tool_probe(params):
+        return await server.tools.probe(params.uri, params.tool)
+
+    @server.feature("salt/authorizeTool")
+    def authorize_tool(params):
+        return server.tools.authorize(
+            params.uri, params.tool, params.token, params.action
+        )
+
+    @server.feature(types.SHUTDOWN)
+    async def shutdown_tools(*_args):
+        await server.tools.close()
+
     def project_folders():
         folders = list(server.workspace.folders)
         if not folders and server.workspace.root_uri:
@@ -207,8 +237,14 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     def apply_settings(settings):
         if isinstance(settings, dict) and "salt" not in settings:
             return
-        errors = server.projects.configure(
-            settings.get("salt", {}) if isinstance(settings, dict) else None,
+        salt = settings.get("salt", {}) if isinstance(settings, dict) else None
+        if isinstance(salt, dict):
+            errors = server.tools.configure(salt.get("tools", []))
+            salt = {k: v for k, v in salt.items() if k != "tools"}
+        else:
+            errors = server.tools.configure([])
+        errors += server.projects.configure(
+            salt,
             project_folders(),
         )
         for error in errors:
