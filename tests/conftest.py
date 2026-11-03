@@ -632,6 +632,18 @@ def open_workspace(
         InitializeParams(
             process_id=12345,
             root_uri=root_uri,
+            # These legacy navigation fixtures describe a state tree explicitly;
+            # an unconfigured workspace now deliberately has ambiguous roles.
+            initialization_options={
+                "salt": {
+                    "projects": [
+                        {
+                            "root": root_uri,
+                            "profiles": {"default": {"stateRoots": ["."]}},
+                        }
+                    ]
+                }
+            },
             capabilities=ClientCapabilities(),
         ),
     ).result(timeout=request_timeout)

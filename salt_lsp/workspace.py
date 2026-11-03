@@ -12,9 +12,10 @@ from pygls.protocol import LanguageServerProtocol
 from pygls.workspace import Workspace
 
 from salt_lsp.base_types import CompletionsDict, SLS_LANGUAGE_ID
-from salt_lsp.utils import UriDict, FileUri, get_top, is_valid_file_uri
+from salt_lsp.utils import UriDict, FileUri, is_valid_file_uri
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
+from salt_lsp.project import ProjectModel, ProjectContext
 
 
 class SlsFileWorkspace(Workspace):
@@ -37,9 +38,8 @@ class SlsFileWorkspace(Workspace):
         #: included FileUris of every tracked document
         self._includes: UriDict[List[FileUri]] = UriDict()
 
-        #: top path corresponding to every workspace folder
-        self._top_paths: UriDict[Optional[FileUri]] = UriDict()
         self._state_name_completions = state_name_completions
+        self.projects = ProjectModel()
 
         self.logger: Logger = getLogger(self.__class__.__name__)
         # FIXME: make this configurable
@@ -75,22 +75,18 @@ class SlsFileWorkspace(Workspace):
         ):
             return
 
-        ws_folder = self._get_workspace_of_document(text_document_uri)
-        top_path: Union[str, FileUri, None]
-        if (
-            ws_folder in self._top_paths
-            and self._top_paths[ws_folder] is not None
-        ):
-            top_path = self._top_paths[ws_folder]
-        else:
-            top_path = ws_folder
-
-        assert top_path is not None
-
+        context = self.project_context(str(text_document_uri))
+        if context is None or context.file_role != "state":
+            return
         self._includes[text_document_uri] = [
             FileUri(f)
             for incl in tree.includes.includes
-            if (f := incl.get_file(FileUri(top_path).path)) is not None
+            for root in context.state_roots
+            if (f := incl.get_file(str(root))) is not None
+            and Path(f).resolve().is_relative_to(root)
+            and (selected := self.project_context(str(FileUri(f)))) is not None
+            and selected.project_root == context.project_root
+            and selected.file_role == "state"
         ]
 
         new_includes = self._includes[text_document_uri]
@@ -112,13 +108,45 @@ class SlsFileWorkspace(Workspace):
                             text=inc_file.read(-1),
                         )
                     )
-                self._resolve_includes(inc)
 
             if inc in self._trees and self._includes.get(inc):
-                new_includes += self._includes[inc]
+                new_includes += [
+                    uri
+                    for uri in self._includes[inc]
+                    if uri not in new_includes
+                ]
 
         assert len(new_includes) >= len(self._includes[text_document_uri])
         self._includes[text_document_uri] = new_includes
+
+    def project_context(self, uri: str) -> Optional[ProjectContext]:
+        """Public selection seam shared by language providers."""
+        folders = list(self.folders)
+        if not folders and self.root_uri:
+            folders = [self.root_uri]
+        try:
+            return self.projects.context(uri, folders)
+        except ValueError:
+            return None
+
+    def invalidate_projects(self, previous: dict) -> None:
+        """Refresh only documents whose immutable analysis context changed."""
+        changed = [
+            uri
+            for uri in self.text_documents
+            if previous.get(uri) != self.project_context(uri)
+        ]
+        for uri in changed:
+            self._trees.pop(FileUri(uri), None)
+            self._document_symbols.pop(FileUri(uri), None)
+            self._includes.pop(FileUri(uri), None)
+        for uri in changed:
+            document = self.get_text_document(uri)
+            self._update_document(
+                types.VersionedTextDocumentIdentifier(
+                    uri=uri, version=document.version or 0
+                )
+            )
 
     def _update_document(
         self,
@@ -150,15 +178,18 @@ class SlsFileWorkspace(Workspace):
         return self.root_uri
 
     def add_folder(self, folder: types.WorkspaceFolder) -> None:
+        previous = {
+            uri: self.project_context(uri) for uri in self.text_documents
+        }
         super().add_folder(folder)
-        top_path = get_top(FileUri(folder.uri).path)
-        self._top_paths[FileUri(folder.uri)] = (
-            FileUri(top_path) if top_path is not None else None
-        )
+        self.invalidate_projects(previous)
 
     def remove_folder(self, folder_uri: Union[str, FileUri]) -> None:
+        previous = {
+            uri: self.project_context(uri) for uri in self.text_documents
+        }
         super().remove_folder(str(folder_uri))
-        self._top_paths.pop(FileUri(folder_uri))
+        self.invalidate_projects(previous)
 
     def update_text_document(
         self,

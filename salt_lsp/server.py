@@ -4,7 +4,6 @@ Language Server Protocol implementation
 
 import logging
 import re
-from os.path import basename
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from lsprotocol import types
@@ -25,6 +24,7 @@ from lsprotocol.types import (
 from pygls.lsp.server import LanguageServer
 
 from salt_lsp import utils
+from salt_lsp.project import ProjectModel
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
@@ -47,6 +47,7 @@ class SaltServer(LanguageServer):
 
         self.logger: logging.Logger = logging.getLogger()
         self._state_names: List[str] = []
+        self.projects = ProjectModel()
 
     @property
     def workspace(self) -> SlsFileWorkspace:
@@ -168,9 +169,59 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     @server.feature(INITIALIZE)
     def initialize(params: InitializeParams) -> None:
         """Set up custom workspace."""
-        del params  # not needed
         cast(SaltLspProto, server.protocol).setup_custom_workspace()
+        server.workspace.projects = server.projects
+        options = params.initialization_options
+        apply_settings(options if options is not None else {})
+        server.window_log_message(
+            types.LogMessageParams(
+                type=types.MessageType.Info,
+                message="Salt analysis defaults to Salt 3008 (not a detected runtime).",
+            )
+        )
         server.logger.debug("Replaced workspace with SlsFileWorkspace")
+
+    @server.feature("salt/projectContext")
+    def project_context(params):
+        """Expose the selected project/profile to any LSP editor."""
+        context = server.workspace.project_context(params.uri)
+        return context.to_lsp() if context else None
+
+    def project_folders():
+        folders = list(server.workspace.folders)
+        if not folders and server.workspace.root_uri:
+            folders = [server.workspace.root_uri]
+        return folders
+
+    def role(uri):
+        try:
+            return server.projects.context(uri, project_folders()).file_role
+        except ValueError:
+            return "generic"
+
+    @server.feature(types.WORKSPACE_DID_CHANGE_CONFIGURATION)
+    def configuration_changed(params: types.DidChangeConfigurationParams):
+        """Apply a complete portable settings snapshot and refresh results."""
+        previous = {
+            uri: server.workspace.project_context(uri)
+            for uri in server.workspace.text_documents
+        }
+        apply_settings(params.settings)
+        server.workspace.invalidate_projects(previous)
+
+    def apply_settings(settings):
+        if isinstance(settings, dict) and "salt" not in settings:
+            return
+        errors = server.projects.configure(
+            settings.get("salt", {}) if isinstance(settings, dict) else None,
+            project_folders(),
+        )
+        for error in errors:
+            server.window_show_message(
+                types.ShowMessageParams(
+                    type=types.MessageType.Error, message=error
+                )
+            )
 
     @server.feature(
         COMPLETION, CompletionOptions(trigger_characters=["-", "."])
@@ -181,12 +232,15 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         """Returns completion items."""
         if not utils.is_valid_file_uri(params.text_document.uri):
             return None
+        if role(params.text_document.uri) not in ("state", "state-top"):
+            return None
         if (
             tree := salt_server.workspace.trees.get(params.text_document.uri)
         ) is None:
             return None
         if (
-            params.context is not None
+            role(params.text_document.uri) == "state"
+            and params.context is not None
             and params.context.trigger_character == "."
         ):
             return CompletionList(
@@ -206,15 +260,37 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         )
         if path and (
             isinstance(path[-1], IncludesNode)
-            or basename(params.text_document.uri) == "top.sls"
+            or role(params.text_document.uri) == "state-top"
             and isinstance(path[-1], StateParameterNode)
         ):
-            file_path = utils.FileUri(params.text_document.uri).path
-            includes = utils.get_sls_includes(file_path)
+            context = salt_server.workspace.project_context(
+                params.text_document.uri
+            )
+            assert context is not None
+            includes = set()
+            for root in context.state_roots:
+                for candidate in root.rglob("*.sls"):
+                    selected = salt_server.workspace.project_context(
+                        candidate.as_uri()
+                    )
+                    if (
+                        not candidate.resolve().is_relative_to(root)
+                        or selected is None
+                        or selected.project_root != context.project_root
+                        or selected.file_role != "state"
+                    ):
+                        continue
+                    relative = candidate.relative_to(root).with_suffix("")
+                    if relative.name == "init":
+                        relative = relative.parent
+                    name = ".".join(relative.parts)
+                    if name:
+                        includes.add(name)
             return CompletionList(
                 is_incomplete=False,
                 items=[
-                    CompletionItem(label=f" {include}") for include in includes
+                    CompletionItem(label=f" {include}")
+                    for include in sorted(includes)
                 ],
             )
         return None
@@ -225,6 +301,8 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     ) -> Optional[types.Location]:
         uri = params.text_document.uri
         if not utils.is_valid_file_uri(uri):
+            return None
+        if role(uri) != "state":
             return None
         if (tree := salt_server.workspace.trees.get(uri)) is None:
             return None
@@ -267,6 +345,8 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         Union[List[types.DocumentSymbol], List[types.SymbolInformation]]
     ]:
         if not utils.is_valid_file_uri(params.text_document.uri):
+            return []
+        if role(params.text_document.uri) != "state":
             return []
         return salt_server.workspace.document_symbols.get(
             params.text_document.uri, []

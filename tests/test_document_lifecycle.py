@@ -31,6 +31,18 @@ class StdioClient:
             {
                 "processId": os.getpid(),
                 "rootUri": root.as_uri(),
+                # Lifecycle fixtures are state documents, not an implicit
+                # classification of every unconfigured workspace (#6).
+                "initializationOptions": {
+                    "salt": {
+                        "projects": [
+                            {
+                                "root": root.as_uri(),
+                                "profiles": {"default": {"stateRoots": ["."]}},
+                            }
+                        ]
+                    }
+                },
                 "capabilities": capabilities,
             },
         )["capabilities"]
@@ -399,4 +411,61 @@ def test_superseded_and_closed_edits_do_not_restore_old_state(stdio, tmp_path):
     assert client.symbols(uri) == []
     client.close(uri)
     client.open(uri, "reopened:\n  file.managed: []\n", version=1)
+    assert client.symbols(uri)[0]["name"] == "reopened"
+
+
+@pytest.mark.parametrize(
+    "encoding,width", [(None, 2), ("utf-8", 4), ("utf-32", 1)]
+)
+def test_profile_rebuild_preserves_unicode_buffer_and_close(
+    stdio, tmp_path, encoding, width
+):
+    client = stdio(encoding)
+    uri = (tmp_path / "switch.sls").as_uri()
+    client.open(uri, "old: {file.managed: []}\r\n")
+    client.change(uri, 2, [{"text": "😀: {file.managed: []}\r\n"}])
+
+    def switch(active):
+        client.notify(
+            "workspace/didChangeConfiguration",
+            {
+                "settings": {
+                    "salt": {
+                        "projects": [
+                            {
+                                "root": tmp_path.as_uri(),
+                                "activeProfile": active,
+                                "profiles": {
+                                    "state": {"stateRoots": ["."]},
+                                    "pillar": {"pillarRoots": ["."]},
+                                },
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+    switch("pillar")
+    assert client.symbols(uri) == []
+    assert client.at("definition", uri) is None
+    client.change(uri, 3, [{"text": "new😀: {file.managed: []}\r\n"}])
+    switch("state")
+    symbol = client.symbols(uri)[0]
+    assert symbol["name"] == "new😀"
+    assert symbol["selectionRange"]["end"] == {
+        "line": 0,
+        "character": 3 + width,
+    }
+    assert symbol["range"]["end"] == {
+        "line": 0,
+        "character": 23 + width,
+    }
+    client.change(uri, 2, [{"text": "stale: {file.managed: []}"}])
+    assert client.symbols(uri)[0]["name"] == "new😀"
+    client.close(uri)
+    switch("pillar")
+    switch("state")
+    assert client.symbols(uri) == []
+    client.open(uri, "reopened: {file.managed: []}", version=1)
     assert client.symbols(uri)[0]["name"] == "reopened"
