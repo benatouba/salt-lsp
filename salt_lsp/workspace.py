@@ -2,12 +2,12 @@
 contents utilizing the existing Workspace implementation from pygls.
 
 """
+
 from logging import getLogger, Logger, DEBUG
 from pathlib import Path
-import sys
 from typing import List, Optional, Union
 
-from pygls.lsp import types
+from lsprotocol import types
 from pygls.protocol import LanguageServerProtocol
 from pygls.workspace import Workspace
 
@@ -15,23 +15,6 @@ from salt_lsp.base_types import CompletionsDict, SLS_LANGUAGE_ID
 from salt_lsp.utils import UriDict, FileUri, get_top
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
-
-
-if sys.version_info[1] <= 8:
-
-    def is_relative_to(p1: Path, p2: Path) -> bool:
-        # stolen from CPython's source
-        """Return True if the path is relative to another path or False."""
-        try:
-            p1.relative_to(p2)
-            return True
-        except ValueError:
-            return False
-
-else:
-
-    def is_relative_to(p1: Path, p2: Path) -> bool:
-        return p1.is_relative_to(p2)
 
 
 class SlsFileWorkspace(Workspace):
@@ -92,6 +75,7 @@ class SlsFileWorkspace(Workspace):
             return
 
         ws_folder = self._get_workspace_of_document(text_document_uri)
+        top_path: Union[str, FileUri, None]
         if (
             ws_folder in self._top_paths
             and self._top_paths[ws_folder] is not None
@@ -119,7 +103,7 @@ class SlsFileWorkspace(Workspace):
                     text_document_uri,
                 )
                 with open(inc.path, "r") as inc_file:
-                    self.put_document(
+                    self.put_text_document(
                         types.TextDocumentItem(
                             uri=str(inc),
                             language_id=SLS_LANGUAGE_ID,
@@ -143,7 +127,7 @@ class SlsFileWorkspace(Workspace):
     ) -> None:
         self.logger.debug("updating document '%s'", text_document.uri)
         uri = text_document.uri
-        tree = parse(self.get_document(uri).source)
+        tree = parse(self.get_text_document(uri).source)
         self._trees[uri] = tree
 
         self._document_symbols[uri] = tree_to_document_symbols(
@@ -152,11 +136,13 @@ class SlsFileWorkspace(Workspace):
 
         self._resolve_includes(text_document.uri)
 
-    def _get_workspace_of_document(self, uri: Union[str, FileUri]) -> FileUri:
+    def _get_workspace_of_document(
+        self, uri: Union[str, FileUri]
+    ) -> Union[str, FileUri]:
         for workspace_uri in self._folders:
 
-            if is_relative_to(
-                Path(FileUri(uri).path), Path(FileUri(workspace_uri).path)
+            if Path(FileUri(uri).path).is_relative_to(
+                Path(FileUri(workspace_uri).path)
             ):
                 return workspace_uri
 
@@ -173,21 +159,23 @@ class SlsFileWorkspace(Workspace):
         super().remove_folder(str(folder_uri))
         self._top_paths.pop(FileUri(folder_uri))
 
-    def update_document(
+    def update_text_document(
         self,
         text_document: types.VersionedTextDocumentIdentifier,
         change: types.TextDocumentContentChangeEvent,
     ) -> None:
-        super().update_document(text_document, change)
+        super().update_text_document(text_document, change)
         self._update_document(text_document)
 
-    def remove_document(self, doc_uri: str) -> None:
-        super().remove_document(doc_uri)
+    def remove_text_document(self, doc_uri: str) -> None:
+        super().remove_text_document(doc_uri)
         self._document_symbols.pop(FileUri(doc_uri))
         self._trees.pop(FileUri(doc_uri))
 
-    def put_document(self, text_document: types.TextDocumentItem) -> None:
-        super().put_document(text_document)
+    def put_text_document(
+        self, text_document: types.TextDocumentItem, notebook_uri=None
+    ) -> None:
+        super().put_text_document(text_document, notebook_uri=notebook_uri)
         self._update_document(text_document)
 
 
@@ -206,9 +194,10 @@ class SaltLspProto(LanguageServerProtocol):
         """
         if not isinstance(self.workspace, SlsFileWorkspace):
             old_ws = self.workspace
-            self.workspace = SlsFileWorkspace(
+            self._workspace = SlsFileWorkspace(
                 self._server._state_name_completions,
                 old_ws.root_uri,
-                self._server.sync_kind,
+                self._server._text_document_sync_kind,
                 old_ws.folders.values(),
+                old_ws.position_encoding,
             )
