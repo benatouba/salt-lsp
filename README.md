@@ -71,6 +71,14 @@ support for 3007. See [catalog provenance and generation](docs/api-catalogs.md).
 Old `salt_lsp/data/states.pickle` files are never loaded; no generation, Salt
 import, loader, or network request runs at server startup.
 
+Document synchronization supports full replacements and sequential incremental
+edits. Source locations use UTF-16 by default, or negotiated UTF-8/UTF-32,
+including non-BMP characters and LF, CRLF, or CR line endings. Closing a document
+discards its buffer analysis; reopening analyzes the new contents. Unsupported
+document URI schemes (such as `untitled:`) receive empty assistance, not errors.
+File URIs decode percent-encoded paths and recognize localhost, drive, and UNC
+forms; Windows filesystem behavior is not yet acceptance-tested.
+
 ### Runtime checks
 
 ```sh
