@@ -1,77 +1,47 @@
----
-name: Continous integration of Salt LSP
+name: Python CI
 
 on:
   push:
-    branches:
-      - "main"
+    branches: [main, integration/salt-modernization]
   pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.8', '3.9', '3.10']
-    name: run tests for python ${{ matrix.python-version }}
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+    name: Python ${{ matrix.python-version }} (source and installed artifact)
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4.5.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - uses: Gr1N/setup-poetry@v8
-      - uses: actions/cache@v3.2.3
+      - uses: astral-sh/setup-uv@v6
         with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: poetry-${{ hashFiles('poetry.lock') }}
-
-      - name: install dependencies
-        run: poetry install
-
-      - name: run the tests
-        run: poetry run pytest
-
-      - name: upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          fail_ci_if_error: false
-          flags: "unittests,python-${{ matrix.python-version }}"
-
-      - name: generate the cached completion data and try to launch the server
+          version: '0.13.5'
+      - name: Install locked development dependencies (no Salt)
+        run: uv sync --locked --python "${{ matrix.python-version }}"
+      - name: Regression tests
+        run: uv run --locked pytest
+      - name: Check formatting
+        if: matrix.python-version == '3.12'
+        run: uv run --locked black --check salt_lsp tests
+      - name: Check types and lint
+        if: matrix.python-version == '3.12'
         run: |
-          poetry run dump_state_name_completions
-          poetry run salt_lsp_server --stop-after-init
-
-      - name: build the package, install it and launch the lsp server
+          uv run --locked mypy salt_lsp
+          uv run --locked pylint --fail-under 9.2 salt_lsp/*.py
+      - name: Build sdist and wheel from sdist, install outside checkout
         run: |
-          poetry build
-          pip install --user --force-reinstall dist/*whl
-          mkdir tmp
-          pushd tmp
-          python -m salt_lsp --stop-after-init
-
-  lint:
-    name: lint and format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4.5.0
-
-      - uses: Gr1N/setup-poetry@v8
-      - uses: actions/cache@v3.2.3
-        with:
-          path: ~/.cache/pypoetry/virtualenvs
-          key: poetry-${{ hashFiles('poetry.lock') }}
-
-      - name: install dependencies
-        run: poetry install
-
-      - name: run black
-        run: poetry run black --check --diff salt_lsp/*py tests/*py
-
-      - name: run mypy
-        run: poetry run mypy salt_lsp/*py
-
-      - name: run pylint
-        run: poetry run pylint --fail-under 9.2 salt_lsp/*py
+          uv build --no-sources --out-dir "$RUNNER_TEMP/artifacts"
+          uv export --locked --no-dev --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/runtime.txt"
+          uv venv --python "${{ matrix.python-version }}" "$RUNNER_TEMP/installed"
+          uv pip install --python "$RUNNER_TEMP/installed/bin/python" --constraint "$RUNNER_TEMP/runtime.txt" "$RUNNER_TEMP"/artifacts/*.whl
+      - name: Real stdio sessions (module and console entry point)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/installed/bin/python" tests/installed_smoke.py
+          "$RUNNER_TEMP/installed/bin/python" tests/installed_smoke.py "$RUNNER_TEMP/installed/bin/salt_lsp_server"

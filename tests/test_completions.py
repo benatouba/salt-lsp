@@ -23,10 +23,10 @@ def test_complete_of_file(salt_client_server, file_name_completer):
     _, server = salt_client_server
     txt_doc = {
         "text_document": SimpleNamespace(
-            uri="foo.sls", text=TEST_FILE, version=0
+            uri="foo.sls", text=TEST_FILE, version=0, language_id="sls"
         ),
     }
-    server.workspace.put_document(txt_doc["text_document"])
+    server.workspace.put_text_document(txt_doc["text_document"])
 
     completions = server.complete_state_name(
         SimpleNamespace(

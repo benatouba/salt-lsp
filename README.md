@@ -24,38 +24,67 @@ pull request fixing the existing bugs/shortcomings.
 As of now, here be 🐉.
 
 
-## Prerequisites
+## Server installation and launch
 
-- Python >= 3.8
-- [Poetry](https://python-poetry.org/)
-- VSCode (required for live testing the server from an editor)
+The modernized runtime supports **CPython 3.11–3.14** on Linux. CI tests every
+minor version with **pygls 2.0.1**, **lsprotocol 2025.0.0**, and **PyYAML 6.0.3**.
+Other operating systems are not yet acceptance-tested. Salt, salt-lint, an
+editor extension, and generated metadata are **not** installation requirements.
+The server runtime is independent of the Salt version a project targets.
 
+Build this checkout with [uv](https://docs.astral.sh/uv/) and install the wheel
+into a dedicated environment (the fork is not yet a new PyPI release):
 
-## Server Setup
-
-Install the dependencies:
-
-```ShellSession
-$ poetry install
+```sh
+uv sync --locked --python 3.12
+uv build --no-sources
+uv export --locked --no-dev --no-emit-project -o /tmp/salt-lsp-runtime.txt
+uv venv --python 3.12 /path/to/salt-lsp-env
+uv pip install --python /path/to/salt-lsp-env/bin/python \
+  --constraint /tmp/salt-lsp-runtime.txt dist/*.whl
 ```
 
-Create the completion classes once:
+`uv.lock` records the complete tested dependency graph, including transitive
+and development dependencies; runtime versions are also pinned in the package.
+Builds use the pinned Hatchling backend, not Poetry. `uv build` creates an sdist
+and then builds its wheel, so no developer-only metadata is needed. To update
+dependencies deliberately, update the pins, regenerate `uv.lock`, and run the
+matrix before widening support.
 
-```ShellSession
-$ poetry run dump_state_name_completions
+Configure any standard LSP client to launch either of these **stdio** commands:
+
+```sh
+/path/to/salt-lsp-env/bin/salt_lsp_server
+/path/to/salt-lsp-env/bin/python -m salt_lsp
 ```
 
-Start the server:
+Use language ID `sls` for Salt documents. Do not add `--tcp` for stdio clients.
+Stdout contains only Content-Length-framed JSON-RPC; logging goes to stderr,
+not into the user's workspace. `--log-level warning` reduces logging. TCP mode
+(`--tcp --host 127.0.0.1 --port 2087`) remains available for development only.
 
-```ShellSession
-$ poetry run salt_lsp_server --tcp
+Startup deliberately uses an **empty API metadata fallback**. Document symbols
+and existing source-based features work; state-function metadata completion is
+empty until the versioned catalog work lands. This is not a claim that a Salt
+API version was detected. Old ignored `salt_lsp/data/states.pickle` files are
+never loaded, even if present; do not run the legacy metadata generator to
+start the server. Missing optional metadata cannot prevent initialization.
+
+### Runtime checks
+
+```sh
+uv run --locked pytest
+# Use the isolated artifact environment above, not the editable development one:
+/path/to/salt-lsp-env/bin/python tests/installed_smoke.py
+/path/to/salt-lsp-env/bin/python tests/installed_smoke.py \
+  /path/to/salt-lsp-env/bin/salt_lsp_server
 ```
 
-Install the server:
-```ShellSession
-$ poetry build
-$ pip install --user --force-reinstall dist/salt_lsp-0.0.1*whl
-```
+The dependency-free smoke probe asserts Salt is absent, launches from an empty
+temporary directory with `PYTHONPATH` removed, exchanges real initialize,
+didOpen, document-symbol, completion, shutdown and exit messages, checks a
+known symbol and deterministic empty completion, and requires a clean exit
+without workspace writes. Each response and process exit has a timeout.
 
 # Clients
 
