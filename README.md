@@ -29,7 +29,7 @@ As of now, here be 🐉.
 The modernized runtime supports **CPython 3.11–3.14** on Linux. CI tests every
 minor version with **pygls 2.0.1**, **lsprotocol 2025.0.0**, and **PyYAML 6.0.3**.
 Other operating systems are not yet acceptance-tested. Salt, salt-lint, an
-editor extension, and generated metadata are **not** installation requirements.
+editor extension, and a metadata-generation step are **not** installation requirements.
 The server runtime is independent of the Salt version a project targets.
 
 Build this checkout with [uv](https://docs.astral.sh/uv/) and install the wheel
@@ -63,12 +63,13 @@ Stdout contains only Content-Length-framed JSON-RPC; logging goes to stderr,
 not into the user's workspace. `--log-level warning` reduces logging. TCP mode
 (`--tcp --host 127.0.0.1 --port 2087`) remains available for development only.
 
-Startup deliberately uses an **empty API metadata fallback**. Document symbols
-and existing source-based features work; state-function metadata completion is
-empty until the versioned catalog work lands. This is not a claim that a Salt
-API version was detected. Old ignored `salt_lsp/data/states.pickle` files are
-never loaded, even if present; do not run the legacy metadata generator to
-start the server. Missing optional metadata cannot prevent initialization.
+Offline state-function completion uses **packaged versioned API catalogs** for
+Salt 3006, 3007, and 3008, selected per document's active profile (default 3008).
+This is known source API information, **not proof of provider availability** or
+a detected runtime. Catalog compatibility does not imply ongoing upstream
+support for 3007. See [catalog provenance and generation](docs/api-catalogs.md).
+Old `salt_lsp/data/states.pickle` files are never loaded; no generation, Salt
+import, loader, or network request runs at server startup.
 
 ### Runtime checks
 
@@ -83,7 +84,7 @@ uv run --locked pytest
 The dependency-free smoke probe asserts Salt is absent, launches from an empty
 temporary directory with `PYTHONPATH` removed, exchanges real initialize,
 didOpen, document-symbol, completion, shutdown and exit messages, checks a
-known symbol and deterministic empty completion, and requires a clean exit
+known symbol, packaged catalog completion and live profile switching, and requires a clean exit
 without workspace writes. Each response and process exit has a timeout.
 
 ## Project configuration

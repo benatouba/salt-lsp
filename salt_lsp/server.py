@@ -24,6 +24,7 @@ from lsprotocol.types import (
 from pygls.lsp.server import LanguageServer
 
 from salt_lsp import utils
+from salt_lsp.catalog import complete_states
 from salt_lsp.project import ProjectModel
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
@@ -227,20 +228,20 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         """Returns completion items."""
         if role(params.text_document.uri) not in ("state", "state-top"):
             return None
-        if (
-            role(params.text_document.uri) == "state"
-            and params.context is not None
-            and params.context.trigger_character == "."
-        ):
-            return CompletionList(
-                is_incomplete=False,
-                items=[
-                    CompletionItem(label=sub_name, documentation=docs)
-                    for sub_name, docs in salt_server.complete_state_name(
-                        params
-                    )
-                ],
+        if role(params.text_document.uri) == "state":
+            context = salt_server.workspace.project_context(
+                params.text_document.uri
             )
+            if context is not None:
+                result = complete_states(
+                    salt_server.workspace.get_text_document(
+                        params.text_document.uri
+                    ),
+                    params.position,
+                    context.salt_version,
+                )
+                if result is not None:
+                    return result
 
         if (
             tree := salt_server.workspace.trees.get(params.text_document.uri)

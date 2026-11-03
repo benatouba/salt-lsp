@@ -6,6 +6,7 @@ The default command is this interpreter's ``-m salt_lsp``.
 
 import importlib.util
 from importlib.resources import files
+import gzip
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,49 @@ def smoke(command):
         schema["$defs"]["profile"]["properties"]["saltVersion"]["default"]
         == "3008"
     )
+    for version, release, source_count in (
+        ("3006", "3006.30", 357),
+        ("3007", "3007.17", 355),
+        ("3008", "3008.5", 130),
+    ):
+        catalog = json.loads(
+            gzip.decompress(
+                files("salt_lsp")
+                .joinpath(f"catalogs/states-{version}.json.gz")
+                .read_bytes()
+            )
+        )
+        assert catalog["schema"] == 1
+        assert catalog["provenance"]["release"] == release
+        assert len(catalog["coverage"]) == source_count
+        assert len(catalog["provenance"]["sha256"]) == 64
+        assert len(catalog["generator"]["sha256"]) == 64
+        assert any(
+            e["name"] == "file.managed"
+            and e["arguments"]
+            and e["documentation"]
+            for e in catalog["entries"]
+        )
+        assert any(
+            e["name"] == "cmd.watch" and e["alias_of"] == "wait"
+            for e in catalog["entries"]
+        )
+        assert any(
+            e["name"] == "pkg.refresh_db"
+            and e["definition"]["path"] == "salt/modules/win_pkg.py"
+            for e in catalog["entries"]
+        )
+        assert (
+            any(
+                e["name"] == "dsc_resource.managed" for e in catalog["entries"]
+            )
+        ) == (version == "3008")
+        assert (
+            any(
+                e["name"] == "docker_container.running"
+                for e in catalog["entries"]
+            )
+        ) == (version != "3008")
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
@@ -138,8 +182,7 @@ def smoke(command):
                 assert len(symbols) == 1, symbols
                 assert symbols[0]["name"] == "example", symbols
                 assert symbols[0]["range"]["start"]["line"] == 0, symbols
-                # Missing optional metadata must give an empty, not failed,
-                # completion response. Versioned catalogs are a later ticket.
+                # Real completions use packaged catalogs without Salt installed.
                 send(
                     "textDocument/completion",
                     {
@@ -149,7 +192,21 @@ def smoke(command):
                     },
                     3,
                 )
-                assert response(3) == {"isIncomplete": False, "items": []}
+                completion = response(3)
+                managed = next(
+                    i for i in completion["items"] if i["label"] == "managed"
+                )
+                assert "3008.5" in managed["detail"]
+                assert "salt/states/file.py" in managed["documentation"]
+                assert managed["textEdit"]["range"]["start"] == {
+                    "line": 1,
+                    "character": 7,
+                }
+                assert managed["textEdit"]["range"]["end"] == {
+                    "line": 1,
+                    "character": 14,
+                }
+                assert managed["textEdit"]["newText"] == "managed"
                 send("salt/projectContext", {"uri": uri}, 4)
                 context = response(4)
                 assert context["saltVersion"] == "3008"
@@ -186,6 +243,19 @@ def smoke(command):
                 assert updated["activeProfile"] == "next"
                 assert updated["environment"] == "dev"
                 assert updated["revision"] > context["revision"]
+                send(
+                    "textDocument/completion",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 1, "character": 7},
+                    },
+                    7,
+                )
+                switched = response(7)
+                assert switched["items"]
+                assert all(
+                    i["data"]["version"] == "3007" for i in switched["items"]
+                )
                 send("shutdown", request_id=6)
                 assert response(6) is None
                 send("exit")
