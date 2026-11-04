@@ -12,6 +12,8 @@ import pytest
 from salt_lsp.tool_process import ProcessRunner
 from salt_lsp.tools import ToolService
 from salt_lsp.project import ProjectContext
+from salt_lsp.workspace import SlsFileWorkspace
+from lsprotocol import types
 from test_projects import clients  # pylint: disable=unused-import
 
 
@@ -75,6 +77,119 @@ def executable(path, body):
     path.write_text(f"#!{sys.executable}\n" + body)
     path.chmod(0o755)
     return str(path)
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["outside-to-project", "project-to-outside", "outside-via-project"],
+)
+def test_discovery_rejects_workspace_symlink_hops(
+    tmp_path, clients, monkeypatch, route
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    safe = executable(
+        installed / "yamlfmt", "print('yamlfmt 0.21.0 (test)')\n"
+    )
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir()
+    workspace_binary = project / "yamlfmt"
+    if route == "outside-to-project":
+        executable(workspace_binary, "raise RuntimeError('UNSAFE')\n")
+        (unsafe / "yamlfmt").symlink_to(workspace_binary)
+        first = unsafe
+    elif route == "project-to-outside":
+        workspace_binary.symlink_to(safe)
+        first = project
+    else:
+        workspace_binary.symlink_to(safe)
+        (unsafe / "yamlfmt").symlink_to(workspace_binary)
+        first = unsafe
+    monkeypatch.setenv("PATH", f"{first}:{installed}")
+    client = clients(
+        project,
+        settings={"tools": [{"projectRoot": str(project), "name": "yamlfmt"}]},
+    )
+    status = client.request(
+        "salt/toolStatus",
+        {"uri": (project / "a.sls").as_uri(), "tool": "yamlfmt"},
+    )
+    assert status["selection"]["executable"] == safe
+
+
+def test_workspace_trusted_boolean_cannot_authorize_code(tmp_path, clients):
+    marker = tmp_path / "executed"
+    binary = executable(
+        tmp_path / "yamlfmt",
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+    )
+    client = clients(
+        tmp_path,
+        settings={
+            "projects": [
+                {
+                    "root": str(tmp_path),
+                    "profiles": {"default": {"stateRoots": ["."]}},
+                }
+            ],
+            "tools": [
+                {
+                    "projectRoot": str(tmp_path),
+                    "name": "yamlfmt",
+                    "executable": binary,
+                    "trusted": True,
+                }
+            ],
+        },
+    )
+    uri = tmp_path / "a.sls"
+    client.open(uri)
+    assert (
+        client.request(
+            "salt/toolProbe", {"uri": uri.as_uri(), "tool": "yamlfmt"}
+        )["status"]
+        == "invalid-config"
+    )
+    assert client.symbols(uri)
+    assert not marker.exists()
+
+
+def test_server_logs_never_contain_source_or_tool_output(tmp_path, clients):
+    binary = executable(
+        tmp_path / "yamlfmt",
+        "import sys\nprint('SECRET_CHILD_OUTPUT')\nprint('SECRET_CHILD_ERROR', file=sys.stderr)\nsys.exit(1)\n",
+    )
+    log = tmp_path / "server.log"
+    with log.open("wb") as stream:
+        client = clients(
+            tmp_path,
+            stderr=stream,
+            settings={
+                "tools": [
+                    {
+                        "projectRoot": str(tmp_path),
+                        "name": "yamlfmt",
+                        "executable": binary,
+                    }
+                ]
+            },
+        )
+        uri = tmp_path / "a.sls"
+        client.open(uri, "key: SECRET_DOCUMENT_CONTENT\n")
+        params = {"uri": uri.as_uri(), "tool": "yamlfmt"}
+        status = client.request("salt/toolStatus", params)
+        client.request(
+            "salt/authorizeTool",
+            {**params, "token": status["token"], "action": "allow"},
+        )
+        assert (
+            client.request("salt/toolProbe", params)["status"]
+            == "tool-failure"
+        )
+        client.close()
+    assert b"SECRET_" not in log.read_bytes()
 
 
 def test_runner_bounds_queue_and_rechecks_permission_after_wait(tmp_path):
@@ -193,6 +308,65 @@ print('MUST NOT PUBLISH')
             result = await task
         assert result.status in ("cancelled", "stale")
         assert result.stdout == b""
+        cleared = []
+        unsubscribe = service.on_invalidate(lambda: cleared.append("tool-results"))
+        service.invalidate()
+        assert cleared == ["tool-results"]
+        unsubscribe()
+        await service.close()
+        assert cleared == ["tool-results"]
+
+    asyncio.run(exercise())
+
+
+def test_provider_close_reopen_same_version_never_reuses_old_work(tmp_path):
+    ready = tmp_path / "ready"
+    binary = executable(
+        tmp_path / "yamlfmt",
+        f"""
+import time
+from pathlib import Path
+Path({str(ready)!r}).touch()
+time.sleep(60)
+""",
+    )
+
+    async def exercise():
+        workspace = SlsFileWorkspace({}, root_uri=tmp_path.as_uri())
+        uri = (tmp_path / "a.sls").as_uri()
+        document = types.TextDocumentItem(
+            uri=uri, language_id="sls", version=1, text="a: value\n"
+        )
+        workspace.put_text_document(document)
+        service = ToolService(workspace.project_context, lambda: [tmp_path])
+        service.configure(
+            [
+                {
+                    "projectRoot": str(tmp_path),
+                    "name": "yamlfmt",
+                    "executable": binary,
+                }
+            ]
+        )
+        subject = service.inspect(uri, "yamlfmt")
+        service.authorize(uri, "yamlfmt", subject["token"], "allow")
+        task = asyncio.create_task(
+            service.run(
+                uri,
+                "yamlfmt",
+                lambda selection, config: [],
+                version=workspace.document_stamp(uri),
+                current_version=lambda: workspace.document_stamp(uri),
+            )
+        )
+        async with asyncio.timeout(2):
+            while not ready.exists():
+                await asyncio.sleep(0.005)
+            workspace.remove_text_document(uri)
+            workspace.put_text_document(document)
+            result = await task
+        assert result.status in ("cancelled", "stale")
+        assert result.stdout == b""
         await service.close()
 
     asyncio.run(exercise())
@@ -228,6 +402,9 @@ def test_explicit_binary_does_not_grant_execution(tmp_path, clients):
 
 def test_approved_probe_pins_config_and_revokes_on_edit(tmp_path, clients):
     marker = tmp_path / "invocation.json"
+    (tmp_path / "pathlib.py").write_text(
+        "raise RuntimeError('WORKSPACE IMPORTED')\n"
+    )
     config = tmp_path / "chosen.yaml"
     config.write_text("formatter:\n  type: basic\n")
     binary = executable(
@@ -484,6 +661,59 @@ while True: time.sleep(1)
     pid = int(ready.read_text())
     assert not Path(f"/proc/{pid}").exists()
     assert client.request("salt/toolProbe", params)["status"] == "denied-trust"
+
+
+@pytest.mark.parametrize("action", ["shutdown", "cancel", "configure"])
+def test_stdio_lifecycle_stops_owned_process(tmp_path, clients, action):
+    ready = tmp_path / "pid"
+    binary = executable(
+        tmp_path / "yamlfmt",
+        f"""
+import os, time, signal
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path({str(ready)!r}).write_text(str(os.getpid()))
+while True: time.sleep(1)
+""",
+    )
+    client = clients(
+        tmp_path,
+        settings={
+            "tools": [
+                {
+                    "projectRoot": str(tmp_path),
+                    "name": "yamlfmt",
+                    "executable": binary,
+                }
+            ]
+        },
+    )
+    params = {"uri": (tmp_path / "a.sls").as_uri(), "tool": "yamlfmt"}
+    status = client.request("salt/toolStatus", params)
+    client.request(
+        "salt/authorizeTool",
+        {**params, "token": status["token"], "action": "allow"},
+    )
+    client.send({"id": 1000, "method": "salt/toolProbe", "params": params})
+    deadline = time.monotonic() + 3
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert ready.exists()
+    pid = int(ready.read_text())
+    if action == "shutdown":
+        client.close()
+    else:
+        if action == "cancel":
+            client.notify("$/cancelRequest", {"id": 1000})
+        else:
+            client.notify(
+                "workspace/didChangeConfiguration", {"settings": {"salt": {}}}
+            )
+        deadline = time.monotonic() + 3
+        while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert client.context(tmp_path / "a.sls") is not None
+    assert not Path(f"/proc/{pid}").exists()
 
 
 def test_custom_rules_must_match_selected_config_and_edits_need_new_grant(

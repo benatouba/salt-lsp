@@ -7,6 +7,7 @@ using its opaque token. Providers must use run(), never spawn independently.
 from dataclasses import dataclass
 import asyncio
 import hashlib
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -95,6 +96,7 @@ class Selection:
     context: ProjectContext
     executable: Path
     explicit: bool
+    workspace_executable: bool
     config: Path | None
     rules: tuple[Path, ...]
     identity: str
@@ -107,6 +109,7 @@ class Selection:
             "executableSource": (
                 "explicit" if self.explicit else "installed-PATH"
             ),
+            "workspaceExecutable": self.workspace_executable,
             "config": str(self.config) if self.config else None,
             "ruleDirs": [str(p) for p in self.rules],
             "projectRoot": str(self.context.project_root),
@@ -125,11 +128,42 @@ class ToolService:
         self.context = context
         self.roots = roots
         self.settings: list[dict] = []
+        self.configuration_error: str | None = None
         self.tokens: dict[str, Selection] = {}
         self.grants: set[str] = set()
         self.epoch = 0
         self.runner = ProcessRunner()
         self.jobs: set[asyncio.Task] = set()
+        self._listeners: list[Callable[[], None]] = []
+
+    def on_invalidate(
+        self, callback: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a synchronous provider hook to clear tool-owned results.
+
+        Returns an unsubscribe function. Called after permission is removed;
+        never clear built-in diagnostics here. At most 16 provider listeners.
+        """
+        if len(self._listeners) >= 16:
+            raise ValueError("Too many tool invalidation listeners")
+        self._listeners.append(callback)
+
+        def unsubscribe():
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+
+        return unsubscribe
+
+    def _notify(self):
+        for callback in tuple(self._listeners):
+            try:
+                callback()
+            except (
+                Exception
+            ):  # A consumer must not interrupt trust revocation.
+                logging.getLogger(__name__).error(
+                    "Tool invalidation listener failed (details omitted)"
+                )
 
     def invalidate(self) -> None:
         """Revoke first, then cancel jobs. No pending job may start afterwards."""
@@ -137,6 +171,7 @@ class ToolService:
         self.grants.clear()
         for job in self.jobs:
             job.cancel()
+        self._notify()
 
     async def close(self) -> None:
         """Revoke and await bounded cleanup on server shutdown."""
@@ -148,6 +183,7 @@ class ToolService:
         self.invalidate()
         self.tokens.clear()
         self.settings = []
+        self.configuration_error = "Invalid salt.tools settings; correct the settings snapshot. Workspace settings cannot grant execution trust."
         if not isinstance(entries, list) or len(entries) > 64:
             return ["salt.tools: expected at most 64 tool selections"]
         allowed = {
@@ -190,9 +226,12 @@ class ToolService:
             ):
                 return ["salt.tools.ruleDirs: expected at most 32 paths"]
         self.settings = entries
+        self.configuration_error = None
         return []
 
     def _select(self, uri, name):
+        if self.configuration_error:
+            raise ToolError("invalid-config", self.configuration_error)
         context = self.context(uri)
         if context is None:
             raise ToolError(
@@ -205,10 +244,15 @@ class ToolService:
             and Path(e["projectRoot"]).resolve() == context.project_root
             and e.get("profile", "default") == context.active_profile
         ]
-        if len(entries) != 1:
+        if not entries:
             raise ToolError(
                 "missing-tool",
                 "Select one user-installed tool for this project/profile in salt.tools.",
+            )
+        if len(entries) > 1:
+            raise ToolError(
+                "invalid-config",
+                "Duplicate tool selections for this project/profile; keep exactly one entry.",
             )
         entry = entries[0]
         selected = entry.get("executable")
@@ -324,6 +368,13 @@ class ToolService:
             context,
             binary,
             bool(selected),
+            not safe_route(
+                binary,
+                [
+                    context.project_root,
+                    *(Path(p).resolve() for p in self.roots()),
+                ],
+            ),
             config,
             tuple(rules),
             identity.hexdigest(),
@@ -355,6 +406,7 @@ class ToolService:
         """Select without executing, returning an explicit approval subject."""
         try:
             selection = self._select(uri, name)
+            revoked = False
             for old_token, old in list(self.tokens.items()):
                 if (
                     old.name == name
@@ -363,7 +415,10 @@ class ToolService:
                     and old != selection
                 ):
                     self.tokens.pop(old_token)
+                    revoked |= old_token in self.grants
                     self.grants.discard(old_token)
+            if revoked:
+                self._notify()
             token = next(
                 (t for t, s in self.tokens.items() if s == selection), None
             )
@@ -371,6 +426,7 @@ class ToolService:
                 if len(self.tokens) >= 128:
                     self.tokens.clear()
                     self.grants.clear()
+                    self._notify()
                 token = secrets.token_urlsafe(24)
                 self.tokens[token] = selection
             return {
@@ -391,13 +447,17 @@ class ToolService:
 
     def _forget_failed_selection(self, uri, name):
         context = self.context(uri)
+        revoked = False
         for token, old in list(self.tokens.items()):
             if old.name == name and (
                 context is None
                 or old.context.project_root == context.project_root
             ):
                 self.tokens.pop(token)
+                revoked |= token in self.grants
                 self.grants.discard(token)
+        if revoked:
+            self._notify()
 
     def authorize(self, uri: str, name: str, token: str, action: str) -> dict:
         """An editor user gesture, not a workspace setting or persisted boolean."""
@@ -422,8 +482,8 @@ class ToolService:
         name: str,
         invocation: Callable[[Selection, Path], list[str]],
         *,
-        version: int | None,
-        current_version: Callable[[], int | None],
+        version: object,
+        current_version: Callable[[], object],
         data: bytes = b"",
         timeout: float = 5.0,
         output_limit: int = 262144,
@@ -466,6 +526,7 @@ class ToolService:
                 env.pop(key, None)
             env["PYTHONSAFEPATH"] = "1"
             env["PYTHONNOUSERSITE"] = "1"
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
             env["HOME"] = directory
             env["XDG_CONFIG_HOME"] = directory
             roots = [

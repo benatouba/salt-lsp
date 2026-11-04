@@ -65,7 +65,7 @@ The editor, not repository settings, owns the user gesture:
 1. Request `salt/toolStatus` with `{uri, tool}`. This does **not** execute any
    process, including a version probe. A resolvable selection returns
    `denied-trust`, an opaque `token`, and `selection`: executable spelling,
-   canonical executable, explicit/PATH provenance, config, rule directories,
+   canonical executable, explicit/PATH and workspace provenance, config, rules,
    project root, and profile. Display these subjects to the user.
 2. Only after explicit user approval, request `salt/authorizeTool` with
    `{uri, tool, token, action: "allow"}`. Approval covers **all** displayed
@@ -104,7 +104,8 @@ logged or returned in LSP status. Static features remain available on failure.
 
 Use **`server.tools: salt_lsp.tools.ToolService`**, not subprocess APIs or the
 lower-level process primitive. Public methods are `inspect(uri, name)`,
-`authorize(uri, name, token, action)`, `invalidate()`, `await close()`, and:
+`authorize(uri, name, token, action)`, `invalidate()`, `await close()`,
+`on_invalidate(callback)`, and:
 
 ```python
 result = await server.tools.run(
@@ -120,7 +121,8 @@ result = await server.tools.run(
 ```
 
 `Selection` is immutable and exposes `context`, `executable`, `config`, `rules`,
-`name`, `explicit`, and an opaque `identity`. `invocation(selection, config)`
+`name`, `explicit`, `workspace_executable`, and an opaque `identity`.
+`invocation(selection, config)`
 is **server adapter code**, never a client/workspace-supplied callback or argv.
 It must use the supplied absolute config to disable native discovery, preserve
 the approved tool-specific rule semantics, and enforce tool/dependency/capability
@@ -146,8 +148,12 @@ timeout, overflow, cancellation, stale, or malformed output as clean diagnostics
 Parsing, diagnostics ownership, lint debounce, formatter eligibility/edits, and
 publication-time staleness checks remain the consumer's responsibility. Recheck
 the stamp/context before publishing after any additional await or expensive
-parsing. Clear only tool-owned results when trust is revoked; leave built-in
-diagnostics intact. Revocation does not disable static analysis.
+parsing. Register `unsubscribe = server.tools.on_invalidate(clear_tool_results)`
+to clear only tool-owned results on explicit revoke/settings changes or an
+observed selection invalidation. The callback is synchronous server code,
+receives no source, and must leave built-in diagnostics intact. There are at
+most 16 subscriptions; call `unsubscribe()` when disposing a provider.
+Revocation does not disable static analysis.
 
 ## Resource and lifecycle guarantees
 
@@ -169,7 +175,7 @@ diagnostics intact. Revocation does not disable static analysis.
 - Shielded, strongly owned spawn/cleanup tasks survive repeated cancellation;
   cleanup is awaited, never detached. stdout/stdin never inherit LSP framing.
 - Launch environment removes Python path/startup overrides, enables safe Python
-  path/no-user-site, filters project/relative PATH entries, and gives HOME/XDG
+  path/no-user-site/no-bytecode, filters project/relative PATH entries, and gives HOME/XDG
   an owned temporary directory. Other environment variables remain for normal
   user installations and Nix wrappers. This is not a hermetic environment.
 

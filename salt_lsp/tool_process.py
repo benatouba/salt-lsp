@@ -89,7 +89,14 @@ class ProcessRunner:
                     return ProcessResult("stale")
                 owner = asyncio.create_task(
                     self._execute(
-                        executable, args, cwd, env, data, timeout, output_limit
+                        executable,
+                        args,
+                        cwd,
+                        env,
+                        data,
+                        timeout,
+                        output_limit,
+                        valid,
                     )
                 )
                 self.owners.add(owner)
@@ -109,11 +116,16 @@ class ProcessRunner:
         finally:
             self.pending -= 1
 
-    async def _execute(self, executable, args, cwd, env, data, timeout, limit):
+    async def _execute(
+        self, executable, args, cwd, env, data, timeout, limit, valid
+    ):
         loop = asyncio.get_running_loop()
         capture = _Capture(limit)
-        spawn = asyncio.create_task(
-            loop.subprocess_exec(
+
+        async def spawn_owned():
+            if not valid():
+                return None, capture
+            return await loop.subprocess_exec(
                 lambda: capture,
                 str(executable),
                 *args,
@@ -124,7 +136,8 @@ class ProcessRunner:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-        )
+
+        spawn = asyncio.create_task(spawn_owned())
         transport = None
         tasks = []
         status = "execution-failure"
@@ -137,6 +150,8 @@ class ProcessRunner:
                 cancelled = True
                 transport, _ = await spawn
                 raise
+            if transport is None:
+                return ProcessResult("stale")
             pipe = transport.get_pipe_transport(0)
 
             async def feed():

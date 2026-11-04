@@ -42,6 +42,9 @@ class SaltServer(LanguageServer):
     LINE_START_REGEX = re.compile(r"^(\s*)\b", re.MULTILINE)
 
     def __init__(self) -> None:
+        # pygls INFO serializes outbound RPC payloads (including diagnostics,
+        # completion documentation and trust tokens). Never log those payloads.
+        logging.getLogger("pygls").setLevel(logging.WARNING)
         super().__init__("salt-lsp", "0.0.1", protocol_cls=SaltLspProto)
 
         self._state_name_completions: Dict[str, StateNameCompletion] = {}

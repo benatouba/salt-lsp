@@ -708,10 +708,10 @@ class Parser:
         token = None
         try:
             for token in tokens:
-                log.debug(token)
+                log.debug("YAML token: %s", type(token).__name__)
                 self._process_token(token)
         except yaml.scanner.ScannerError as err:
-            log.debug(err)
+            log.debug("YAML scanner error (source omitted)")
             if token:
                 # Properly close the opened blocks
                 for node in reversed(self._breadcrumbs):
@@ -755,10 +755,10 @@ class Parser:
                             col=err.problem_mark.column,
                         )
             return self._tree
-        except yaml.YAMLError as err:
+        except yaml.YAMLError:
             # Reader failures (for example NUL or an unpaired surrogate in an
             # in-progress buffer) are source errors, not protocol failures.
-            log.debug(err)
+            log.debug("YAML reader error (source omitted)")
         return self._tree
 
 
