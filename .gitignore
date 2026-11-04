@@ -134,3 +134,13 @@ clients/vscode/out/
 
 salt_lsp/data/states.pickle
 *.vsix
+
+# Development environment
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+.direnv/
+.pre-commit-config.yaml
+
+# Agent worktrees
+.claude/worktrees/

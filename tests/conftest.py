@@ -1,6 +1,11 @@
 from threading import Thread
 import os
 
+# Git exports these to hooks. Left set, a test's `git init` or `git rev-parse`
+# would act on the repository being committed to instead of its temp directory.
+for _name in [name for name in os.environ if name.startswith("GIT_")]:
+    del os.environ[_name]
+
 from lsprotocol.types import (
     EXIT,
     INITIALIZE,
