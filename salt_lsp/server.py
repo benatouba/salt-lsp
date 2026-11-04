@@ -5,6 +5,7 @@ Language Server Protocol implementation
 import logging
 import os
 import re
+from functools import wraps
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from lsprotocol import types
@@ -25,7 +26,8 @@ from lsprotocol.types import (
 from pygls.lsp.server import LanguageServer
 
 from salt_lsp import utils
-from salt_lsp.catalog import complete_states
+from salt_lsp.catalog import complete_states, project_catalog
+from salt_lsp.custom_sources import discover
 from salt_lsp.project import ProjectModel
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
@@ -289,10 +291,25 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                 )
             )
 
+    def with_sources(handler):
+        @wraps(handler)
+        def selected(salt_server, params):
+            context = salt_server.workspace.project_context(
+                params.text_document.uri
+            )
+            entries = (
+                discover(salt_server.workspace, context) if context else []
+            )
+            with project_catalog(entries):
+                return handler(salt_server, params)
+
+        return selected
+
     @server.feature(
         COMPLETION,
         CompletionOptions(trigger_characters=["-", ".", "'", '"', "(", ","]),
     )
+    @with_sources
     def completions(
         salt_server: SaltServer, params: CompletionParams
     ) -> Optional[CompletionList]:
@@ -384,6 +401,7 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         return None
 
     @server.feature(types.TEXT_DOCUMENT_HOVER)
+    @with_sources
     def hover(
         salt_server: SaltServer, params: types.HoverParams
     ) -> Optional[types.Hover]:
