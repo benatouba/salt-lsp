@@ -29,6 +29,7 @@ from salt_lsp.catalog import complete_states, project_catalog
 from salt_lsp.custom_sources import discover
 from salt_lsp.custom_definitions import definitions
 from salt_lsp.source_references import SourceView, at_reference
+from salt_lsp.requisite_targets import candidates as requisite_candidates
 from salt_lsp.project import ProjectModel, file_path
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
@@ -36,7 +37,6 @@ from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
-    RequisiteNode,
     parse,
 )
 
@@ -428,20 +428,14 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
             )
             if locations:
                 return locations
-        if (tree := salt_server.workspace.trees.get(uri)) is None:
-            return None
-        path = utils.construct_path_to_position(
-            tree, params.position, salt_server.workspace.get_text_document(uri)
-        )
-
-        # Going to definition is only handled on requisites ids
-        if not path or not isinstance(path[-1], RequisiteNode):
-            return None
-
-        if (id_to_find := cast(RequisiteNode, path[-1]).reference) is None:
-            return None
-
-        return salt_server.find_id_in_doc_and_includes(id_to_find, uri)
+        if context and uri in salt_server.workspace.text_documents:
+            return requisite_candidates(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context,
+            )
+        return None
 
     @server.feature(TEXT_DOCUMENT_DID_OPEN)
     def did_open(

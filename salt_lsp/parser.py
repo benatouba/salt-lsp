@@ -182,6 +182,7 @@ class StateParameterNode(AstNode):
             requisites_keys
             + [k + "_any" for k in requisites_keys]
             + [k + "_in" for k in requisites_keys]
+            + ["onfail_all"]
         )
         if key in all_requisites_keys and isinstance(
             self.parent, StateCallNode
