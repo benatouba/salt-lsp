@@ -123,7 +123,7 @@ pre-commit hook (managed by `prek`) that runs the test suite on every commit.
 
 ## VSCode
 
-1. Run `yarn install`
+1. Run `pnpm install`
 2. Start VSCode and open this directory as the server
 3. Open the Debug menu (Ctrl + Shift + D)
 4. Select "Launch Client" drop down
