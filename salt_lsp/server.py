@@ -28,6 +28,7 @@ from pygls.lsp.server import LanguageServer
 from salt_lsp import utils
 from salt_lsp.catalog import complete_states, project_catalog
 from salt_lsp.custom_sources import discover
+from salt_lsp.custom_definitions import definitions
 from salt_lsp.project import ProjectModel
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
@@ -422,14 +423,25 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         )
 
     @server.feature(DEFINITION)
+    @with_sources
     def goto_definition(
         salt_server: SaltServer, params: types.DeclarationParams
-    ) -> Optional[types.Location]:
+    ) -> Optional[Union[types.Location, List[types.Location]]]:
         uri = params.text_document.uri
         if not utils.is_valid_file_uri(uri):
             return None
         if role(uri) != "state":
             return None
+        context = salt_server.workspace.project_context(uri)
+        if context and uri in salt_server.workspace.text_documents:
+            locations = definitions(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context.salt_version,
+            )
+            if locations:
+                return locations
         if (tree := salt_server.workspace.trees.get(uri)) is None:
             return None
         path = utils.construct_path_to_position(

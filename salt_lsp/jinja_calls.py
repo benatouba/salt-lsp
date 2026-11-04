@@ -290,13 +290,18 @@ def _function_items(
     for label, entries in grouped.items():
         first = entries[0]
         providers = ", ".join(f"{e['provider']}:{e['line']}" for e in entries)
+        origin = (
+            "Project declarations"
+            if any(e.get("uri") for e in entries)
+            else f"Salt {release}"
+        )
         detail = (
-            f"{len(entries)} conditional provider candidates — Salt {release}"
+            f"{len(entries)} conditional provider candidates — {origin}"
             if len(entries) > 1
-            else f"{format_signature(first)} — Salt {release}; {providers}"
+            else f"{format_signature(first)} — {origin}; {providers}"
         )
         documentation = (
-            f"Salt {release} source-known execution API ({providers}).\n"
+            f"{origin} source-known execution API ({providers}).\n"
             "Catalog membership is not proof of provider availability. "
             "Runtime gates/dependencies and decorators are not evaluated.\n\n"
             + (

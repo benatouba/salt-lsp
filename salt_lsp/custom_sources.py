@@ -57,39 +57,148 @@ def _extract(path, source, kind):
         return []
     try:
         tree = ast.parse(source)
-        functions = {}
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                functions[node.name] = node
-            elif isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        functions.pop(target.id, None)
-            elif isinstance(node, ast.Delete):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        functions.pop(target.id, None)
+        functions, values = _bindings(tree.body)
+        modules = _module_names(path, functions, values)
+        restriction = values.get(
+            "__load__", values.get("__all__", "unrestricted")
+        )
+        aliases = values.get("__func_alias__", {})
+        aliases = aliases if isinstance(aliases, dict) else {}
         return [
             {
                 "kind": kind,
-                "module": path.stem,
-                "function": name,
-                "name": f"{path.stem}.{name}",
+                "module": module,
+                "function": aliases.get(name, name),
+                "name": f"{module}.{aliases.get(name, name)}",
                 "provider": str(path),
                 "line": function.lineno,
                 "documentation": ast.get_docstring(function) or "",
                 "arguments": _arguments(function),
                 "authoring": True,
-                "alias_of": None,
+                "alias_of": function.name if function.name != name else None,
                 "uri": path.as_uri(),
                 "source_name": function.name,
+                "source_range": _definition_range(function, source),
             }
-            for name, function in functions.items()
+            for name, candidates in functions.items()
+            for function in candidates
+            for module in modules
             if not name.startswith("_")
+            and (
+                restriction is None
+                or restriction == "unrestricted"
+                or isinstance(restriction, (list, tuple))
+                and name in restriction
+            )
+            and isinstance(aliases.get(name, name), str)
         ]
     except (SyntaxError, ValueError, RecursionError):
         # Invalid live source is unknown, never replaced with last-good/disk metadata.
         return []
+
+
+def _literal(node):
+    """A deliberately tiny literal grammar; never invoke source callables."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_literal(item) for item in node.elts]
+    if isinstance(node, ast.Dict):
+        pairs = [
+            (_literal(key), _literal(value))
+            for key, value in zip(node.keys, node.values)
+        ]
+        return (
+            dict(pairs) if all(isinstance(k, str) for k, _ in pairs) else None
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+        and not node.args
+    ):
+        return {kw.arg: _literal(kw.value) for kw in node.keywords if kw.arg}
+    return None
+
+
+def _bindings(nodes):
+    functions, values = {}, {}
+    for node in nodes:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions[node.name] = [node]
+        elif isinstance(node, ast.Assign):
+            value = _literal(node.value)
+            bound = (
+                functions.get(node.value.id, [])
+                if isinstance(node.value, ast.Name)
+                else []
+            )
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    values[target.id] = value
+                    functions[target.id] = list(bound)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    functions.pop(target.id, None)
+                    values[target.id] = None
+        elif isinstance(node, (ast.If, ast.Try, ast.With)):
+            suites = [
+                node.body,
+                getattr(node, "orelse", []),
+                getattr(node, "finalbody", []),
+            ]
+            suites.extend(
+                handler.body for handler in getattr(node, "handlers", [])
+            )
+            for suite in suites:
+                conditional, metadata = _bindings(suite)
+                for name, candidates in conditional.items():
+                    functions.setdefault(name, []).extend(candidates)
+                # A conditional mutation invalidates certainty, not other names.
+                for name in metadata:
+                    values[name] = None
+    return functions, values
+
+
+def _returns(nodes):
+    for node in nodes:
+        if isinstance(node, ast.Return):
+            yield node.value
+        elif not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            yield from _returns(list(ast.iter_child_nodes(node)))
+
+
+def _module_names(path, functions, values):
+    hooks = functions.get("__virtual__", [])
+    names = set()
+    declared = values.get("__virtualname__")
+    for hook in hooks:
+        if isinstance(declared, str):
+            names.add(declared)
+        for returned in _returns(hook.body):
+            if isinstance(returned, ast.Constant) and isinstance(
+                returned.value, str
+            ):
+                names.add(returned.value)
+    if not names:
+        names.add(path.stem)
+    aliases = values.get("__virtual_aliases__", [])
+    if isinstance(aliases, (list, tuple)):
+        names.update(name for name in aliases if isinstance(name, str))
+    return sorted(names)
+
+
+def _definition_range(function, source):
+    line = source.splitlines()[function.lineno - 1]
+    start = len(line.encode("utf-8")[: function.col_offset].decode("utf-8"))
+    start = line.index(
+        function.name,
+        start + (10 if isinstance(function, ast.AsyncFunctionDef) else 4),
+    )
+    return (function.lineno - 1, start, start + len(function.name))
 
 
 def discover(workspace, context):
@@ -156,6 +265,14 @@ def discover(workspace, context):
                 total += len(source)
                 if total > 16 * MAX_SOURCE:
                     return sources
+                if ordered:
+                    sources.append(
+                        {
+                            "kind": kind,
+                            "source_only": True,
+                            "source_identity": path.stem,
+                        }
+                    )
                 sources.extend(_extract(path, source, kind))
             except (OSError, UnicodeError):
                 continue

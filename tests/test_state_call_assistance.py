@@ -634,7 +634,7 @@ def test_assistance_never_imports_salt_or_workspace_code(
     client = clients(tmp_path, settings=settings(tmp_path))
     states = tmp_path / "_states"
     states.mkdir()
-    (states / "file.py").write_text(trap)
+    (states / "file.py").write_text(trap + "def managed(name): pass\n")
     path = tmp_path / "a.sls"
     client.open(path, "{{ salt['cmd.run']('x') }}:\n  file.managed:\n    - \n")
 
