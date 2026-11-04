@@ -57,6 +57,7 @@ in
         uv pip install --python "$work/installed-${version}/bin/python" --constraint "$work/runtime.txt" "$work"/dist/*.whl
         "$work/installed-${version}/bin/python" tests/installed_smoke.py
         "$work/installed-${version}/bin/python" tests/installed_smoke.py "$work/installed-${version}/bin/salt_lsp_server"
+        "$work/installed-${version}/bin/python" tests/installed_neovim.py
       '') matrix)}
     '';
   };

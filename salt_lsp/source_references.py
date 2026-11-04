@@ -5,6 +5,7 @@ so dependency removal, disk edits, profile changes and close need no stale cache
 """
 
 import os
+import stat
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,9 +142,20 @@ class SourceView:
                 document = self.overlays[path]
                 source = document.source
             else:
-                if path.stat().st_size > MAX_BYTES:
+                metadata = path.stat()
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_size > MAX_BYTES
+                ):
                     return None
-                with path.open(encoding="utf-8") as stream:
+                # A workspace FIFO must never block the LSP event loop, even
+                # if a regular file is replaced between stat and open.
+                with os.fdopen(
+                    os.open(path, os.O_RDONLY | os.O_NONBLOCK),
+                    encoding="utf-8",
+                ) as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        return None
                     source = stream.read(MAX_BYTES + 1)
                 document = TextDocument(
                     path.as_uri(),

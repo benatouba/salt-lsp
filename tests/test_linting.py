@@ -69,8 +69,9 @@ def wait_lint(client, path):
     raise AssertionError("Lint did not finish")
 
 
+@pytest.mark.parametrize("severity, lsp_severity", [("HIGH", 2), ("INFO", 3)])
 def test_lint_trust_trailing_debounce_unsaved_findings_and_clear(
-    tmp_path, clients
+    tmp_path, clients, severity, lsp_severity
 ):
     marker = tmp_path / "runs"
     binary = executable(
@@ -83,7 +84,7 @@ else:
     text = sys.stdin.read()
     with Path({str(marker)!r}).open('a') as log:
         log.write(text.replace('\\n', '|') + '\\n')
-    findings = [{{'id': '901', 'message': 'Known finding', 'filename': sys.argv[sys.argv.index('--stdin-filename') + 1], 'linenumber': 1, 'severity': 'HIGH'}}] if 'bad' in text else []
+    findings = [{{'id': '901', 'message': 'Known finding', 'filename': sys.argv[sys.argv.index('--stdin-filename') + 1], 'linenumber': 1, 'severity': {severity!r}}}] if 'bad' in text else []
     print(json.dumps(findings))
     sys.exit(2 if findings else 0)
 """,
@@ -109,7 +110,7 @@ else:
     findings = lint_findings(client, path)
     assert len(findings) == 1
     assert findings[0]["code"] == "901"
-    assert findings[0]["severity"] == 2
+    assert findings[0]["severity"] == lsp_severity
     assert findings[0]["range"]["start"] == {"line": 0, "character": 0}
     assert marker.read_text() == "bad: newest|\n"
     assert path.read_text() == "saved: disk\n"

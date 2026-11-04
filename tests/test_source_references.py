@@ -105,3 +105,21 @@ def test_ordered_roots_cycles_and_disk_dependency_changes(tmp_path, clients):
     )
     assert definition(client, path, 0, 16) is None
     assert definition(client, path, 2, 15) is None
+
+
+def test_special_files_are_not_read_as_include_sources(tmp_path, clients):
+    import os
+
+    os.mkfifo(tmp_path / "blocked.sls")
+    client = clients(tmp_path, settings=settings(tmp_path, stateRoots=["."]))
+    path = tmp_path / "a.sls"
+    client.open(path, "include:\n  - blocked\n")
+    result = client.request(
+        "textDocument/definition",
+        {
+            "textDocument": {"uri": path.as_uri()},
+            "position": {"line": 1, "character": 5},
+        },
+    )
+    assert not result
+    assert client.symbols(path)
