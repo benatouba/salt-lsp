@@ -2,36 +2,22 @@
 contents utilizing the existing Workspace implementation from pygls.
 
 """
+
 from logging import getLogger, Logger, DEBUG
 from pathlib import Path
-import sys
 from typing import List, Optional, Union
 
-from pygls.lsp import types
+from lsprotocol import types
 from pygls.protocol import LanguageServerProtocol
 from pygls.workspace import Workspace
 
-from salt_lsp.base_types import CompletionsDict, SLS_LANGUAGE_ID
-from salt_lsp.utils import UriDict, FileUri, get_top
+from salt_lsp.base_types import CompletionsDict
+from salt_lsp.utils import UriDict, FileUri, is_valid_file_uri
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
-
-
-if sys.version_info[1] <= 8:
-
-    def is_relative_to(p1: Path, p2: Path) -> bool:
-        # stolen from CPython's source
-        """Return True if the path is relative to another path or False."""
-        try:
-            p1.relative_to(p2)
-            return True
-        except ValueError:
-            return False
-
-else:
-
-    def is_relative_to(p1: Path, p2: Path) -> bool:
-        return p1.is_relative_to(p2)
+from salt_lsp.source_analysis import source_tree
+from salt_lsp.project import ProjectModel, ProjectContext
+from salt_lsp.source_references import SourceView
 
 
 class SlsFileWorkspace(Workspace):
@@ -54,9 +40,11 @@ class SlsFileWorkspace(Workspace):
         #: included FileUris of every tracked document
         self._includes: UriDict[List[FileUri]] = UriDict()
 
-        #: top path corresponding to every workspace folder
-        self._top_paths: UriDict[Optional[FileUri]] = UriDict()
         self._state_name_completions = state_name_completions
+        self.projects = ProjectModel()
+        self._document_sequence = 0
+        self._document_stamps: dict[str, tuple[int, int | None]] = {}
+        self.on_change = lambda uri: None
 
         self.logger: Logger = getLogger(self.__class__.__name__)
         # FIXME: make this configurable
@@ -84,56 +72,53 @@ class SlsFileWorkspace(Workspace):
     def _resolve_includes(
         self, text_document_uri: Union[str, FileUri]
     ) -> None:
-        if (
-            (tree := self._trees[text_document_uri]) is None
-            or tree.includes is None
-            or len(tree.includes.includes) == 0
-        ):
-            return
+        context = self.project_context(str(text_document_uri))
+        self._includes[text_document_uri] = []
+        if context is not None and context.file_role in ("state", "pillar"):
+            origin = Path(FileUri(text_document_uri).path).resolve()
+            self._includes[text_document_uri] = [
+                FileUri(path.as_uri())
+                for path, _ in SourceView(self, context).closure(origin)
+                if path != origin
+            ]
 
-        ws_folder = self._get_workspace_of_document(text_document_uri)
-        if (
-            ws_folder in self._top_paths
-            and self._top_paths[ws_folder] is not None
-        ):
-            top_path = self._top_paths[ws_folder]
-        else:
-            top_path = ws_folder
+    def project_context(self, uri: str) -> Optional[ProjectContext]:
+        """Public selection seam shared by language providers."""
+        folders = list(self.folders)
+        if not folders and self.root_uri:
+            folders = [self.root_uri]
+        try:
+            return self.projects.context(uri, folders)
+        except ValueError:
+            return None
 
-        assert top_path is not None
+    def document_stamp(self, uri: str) -> tuple[int, int | None] | None:
+        """Opaque lifetime/version stamp for async tool providers.
 
-        self._includes[text_document_uri] = [
-            FileUri(f)
-            for incl in tree.includes.includes
-            if (f := incl.get_file(FileUri(top_path).path)) is not None
+        Unlike an LSP version integer this cannot match a close/reopen or an
+        accepted same-version update. None means no live tracked document.
+        Capture this plus project_context before work; compare before publishing.
+        """
+        return self._document_stamps.get(uri)
+
+    def invalidate_projects(self, previous: dict) -> None:
+        """Refresh only documents whose immutable analysis context changed."""
+        changed = [
+            uri
+            for uri in self.text_documents
+            if previous.get(uri) != self.project_context(uri)
         ]
-
-        new_includes = self._includes[text_document_uri]
-
-        # now try to re-read all the trees if they are not present:
-        for inc in self._includes[text_document_uri]:
-            if inc not in self._trees:
-                self.logger.debug(
-                    "Adding file '%s' via includes of '%s'",
-                    inc,
-                    text_document_uri,
+        for uri in changed:
+            self._trees.pop(FileUri(uri), None)
+            self._document_symbols.pop(FileUri(uri), None)
+            self._includes.pop(FileUri(uri), None)
+        for uri in changed:
+            document = self.get_text_document(uri)
+            self._update_document(
+                types.VersionedTextDocumentIdentifier(
+                    uri=uri, version=document.version or 0
                 )
-                with open(inc.path, "r") as inc_file:
-                    self.put_document(
-                        types.TextDocumentItem(
-                            uri=str(inc),
-                            language_id=SLS_LANGUAGE_ID,
-                            version=0,
-                            text=inc_file.read(-1),
-                        )
-                    )
-                self._resolve_includes(inc)
-
-            if inc in self._trees and self._includes.get(inc):
-                new_includes += self._includes[inc]
-
-        assert len(new_includes) >= len(self._includes[text_document_uri])
-        self._includes[text_document_uri] = new_includes
+            )
 
     def _update_document(
         self,
@@ -143,51 +128,81 @@ class SlsFileWorkspace(Workspace):
     ) -> None:
         self.logger.debug("updating document '%s'", text_document.uri)
         uri = text_document.uri
-        tree = parse(self.get_document(uri).source)
+        self._document_sequence += 1
+        self._document_stamps[uri] = (
+            self._document_sequence,
+            self.get_text_document(uri).version,
+        )
+        tree = parse(self.get_text_document(uri).source)
         self._trees[uri] = tree
 
         self._document_symbols[uri] = tree_to_document_symbols(
-            tree, self._state_name_completions
+            source_tree(self.get_text_document(uri).source),
+            self._state_name_completions,
+            self.get_text_document(uri),
         )
 
         self._resolve_includes(text_document.uri)
+        self.on_change(str(uri))
 
-    def _get_workspace_of_document(self, uri: Union[str, FileUri]) -> FileUri:
+    def _get_workspace_of_document(
+        self, uri: Union[str, FileUri]
+    ) -> Union[str, FileUri]:
         for workspace_uri in self._folders:
 
-            if is_relative_to(
-                Path(FileUri(uri).path), Path(FileUri(workspace_uri).path)
+            if Path(FileUri(uri).path).is_relative_to(
+                Path(FileUri(workspace_uri).path)
             ):
                 return workspace_uri
 
         return self.root_uri
 
     def add_folder(self, folder: types.WorkspaceFolder) -> None:
+        previous = {
+            uri: self.project_context(uri) for uri in self.text_documents
+        }
         super().add_folder(folder)
-        top_path = get_top(FileUri(folder.uri).path)
-        self._top_paths[FileUri(folder.uri)] = (
-            FileUri(top_path) if top_path is not None else None
-        )
+        self.invalidate_projects(previous)
 
     def remove_folder(self, folder_uri: Union[str, FileUri]) -> None:
+        previous = {
+            uri: self.project_context(uri) for uri in self.text_documents
+        }
         super().remove_folder(str(folder_uri))
-        self._top_paths.pop(FileUri(folder_uri))
+        self.invalidate_projects(previous)
 
-    def update_document(
+    def update_text_document(
         self,
         text_document: types.VersionedTextDocumentIdentifier,
         change: types.TextDocumentContentChangeEvent,
     ) -> None:
-        super().update_document(text_document, change)
+        if not is_valid_file_uri(text_document.uri):
+            return
+        current = self.text_documents.get(text_document.uri)
+        if current is None or (
+            current.version is not None
+            and text_document.version < current.version
+        ):
+            return
+        super().update_text_document(text_document, change)
         self._update_document(text_document)
 
-    def remove_document(self, doc_uri: str) -> None:
-        super().remove_document(doc_uri)
-        self._document_symbols.pop(FileUri(doc_uri))
-        self._trees.pop(FileUri(doc_uri))
+    def remove_text_document(self, doc_uri: str) -> None:
+        if not is_valid_file_uri(doc_uri):
+            return
+        self._document_stamps.pop(doc_uri, None)
+        super().remove_text_document(doc_uri)
+        self._document_symbols.pop(FileUri(doc_uri), None)
+        self._trees.pop(FileUri(doc_uri), None)
+        self._includes.pop(FileUri(doc_uri), None)
+        self.on_change(doc_uri)
 
-    def put_document(self, text_document: types.TextDocumentItem) -> None:
-        super().put_document(text_document)
+    def put_text_document(
+        self, text_document: types.TextDocumentItem, notebook_uri=None
+    ) -> None:
+        if not is_valid_file_uri(text_document.uri):
+            return
+        super().put_text_document(text_document, notebook_uri=notebook_uri)
         self._update_document(text_document)
 
 
@@ -206,9 +221,10 @@ class SaltLspProto(LanguageServerProtocol):
         """
         if not isinstance(self.workspace, SlsFileWorkspace):
             old_ws = self.workspace
-            self.workspace = SlsFileWorkspace(
+            self._workspace = SlsFileWorkspace(
                 self._server._state_name_completions,
                 old_ws.root_uri,
-                self._server.sync_kind,
+                self._server._text_document_sync_kind,
                 old_ws.folders.values(),
+                old_ws.position_encoding,
             )

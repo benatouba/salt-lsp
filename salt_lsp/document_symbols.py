@@ -2,11 +2,13 @@
 Implementation of the DocumentSymbolsRequest, see:
 https://microsoft.github.io/language-server-protocol/specification#textDocument_documentSymbol
 """
+
 from dataclasses import dataclass, field
 import itertools
 from typing import Callable, Dict, List, Sequence, TypedDict, cast
 
-from pygls.lsp import types
+from lsprotocol import types
+from pygls.workspace import TextDocument
 
 from salt_lsp.parser import (
     AstNode,
@@ -70,7 +72,7 @@ def _get_doc_from_module_name(
         return None
 
     if "." in mod_name:
-        mod_base_name, submod_name = mod_name.split(".")
+        mod_base_name, submod_name = mod_name.split(".", 1)
         completer = state_completions.get(mod_base_name)
         if completer is None:
             return None
@@ -195,7 +197,9 @@ class Visitor:
 
 
 def tree_to_document_symbols(
-    tree: Tree, state_completions: CompletionsDict
+    tree: Tree,
+    state_completions: CompletionsDict,
+    document: Optional[TextDocument] = None,
 ) -> List[types.DocumentSymbol]:
 
     res = []
@@ -212,4 +216,33 @@ def tree_to_document_symbols(
 
         res += visitor.document_symbols
 
+    if document is not None:
+
+        def convert(symbol: types.DocumentSymbol) -> None:
+            # AST starts can include sequence dashes or quoted scalar syntax.
+            # Select the identifier in the original line, not that syntax.
+            line = symbol.selection_range.start.line
+            if line < len(document.lines):
+                label = "include" if symbol.name == "includes" else symbol.name
+                column = document.lines[line].find(
+                    label, symbol.selection_range.start.character
+                )
+                if column >= 0:
+                    symbol.selection_range = types.Range(
+                        types.Position(line, column),
+                        types.Position(line, column + len(label)),
+                    )
+            symbol.range = document.position_codec.range_to_client_units(
+                document.lines, symbol.range
+            )
+            symbol.selection_range = (
+                document.position_codec.range_to_client_units(
+                    document.lines, symbol.selection_range
+                )
+            )
+            for child in symbol.children or []:
+                convert(child)
+
+        for symbol in res:
+            convert(symbol)
     return res

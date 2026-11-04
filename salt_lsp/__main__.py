@@ -1,11 +1,10 @@
 import argparse
 import logging
-import pickle
-from os.path import dirname, abspath, join
+import signal
+import sys
 from typing import Dict
 
 from salt_lsp.server import SaltServer, setup_salt_server_capabilities
-from salt_lsp.base_types import StateNameCompletion
 
 
 LOG_LEVEL_DICT: Dict[str, int] = {
@@ -60,26 +59,26 @@ def main():
 
     log_level = loglevel_from_str(args.log_level[0])
     logging.basicConfig(
-        filename="salt-server.log",
         level=log_level,
-        filemode="w",
     )
-
-    with open(
-        join(dirname(abspath(__file__)), "data", "states.pickle"), "rb"
-    ) as states_file:
-        states: Dict[str, StateNameCompletion] = pickle.load(states_file)
 
     salt_server = SaltServer()
     setup_salt_server_capabilities(salt_server)
-    salt_server.post_init(states, log_level)
+    # Until versioned API catalogs are supplied, metadata is deliberately empty.
+    # Never load developer-generated pickle files or invoke Salt on startup.
+    salt_server.post_init({}, log_level)
 
     if args.stop_after_init:
         return
 
+    # Editors stop servers with SIGTERM. Unwinding through the event loop lets
+    # cancellation clean up any running external-tool process group.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
     if args.tcp:
         salt_server.start_tcp(args.host, args.port)
     else:
+        salt_server.exit_process_on_shutdown = True
         salt_server.start_io()
 
 

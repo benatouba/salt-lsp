@@ -1,20 +1,27 @@
-import asyncio
 from threading import Thread
 import os
 
-from pygls.lsp.methods import (
+# Git exports these to hooks. Left set, a test's `git init` or `git rev-parse`
+# would act on the repository being committed to instead of its temp directory.
+for _name in [name for name in os.environ if name.startswith("GIT_")]:
+    del os.environ[_name]
+
+from lsprotocol.types import (
     EXIT,
     INITIALIZE,
     TEXT_DOCUMENT_DID_OPEN,
     SHUTDOWN,
 )
-from pygls.lsp.types import (
+from lsprotocol.types import (
     ClientCapabilities,
     InitializeParams,
     DidOpenTextDocumentParams,
     TextDocumentItem,
+    TEXT_DOCUMENT_DOCUMENT_SYMBOL,
+    DocumentSymbolParams,
+    TextDocumentIdentifier,
 )
-from pygls.server import LanguageServer
+from pygls.lsp.server import LanguageServer
 import pytest
 
 from salt_lsp.base_types import StateNameCompletion
@@ -497,7 +504,7 @@ def salt_client_server():
         args=(os.fdopen(csr, "rb"), os.fdopen(scw, "wb")),
     )
     server_thread.daemon = True
-    client = LanguageServer(asyncio.new_event_loop())
+    client = LanguageServer("test-client", "0.0.1")
     client_thread = Thread(
         target=client.start_io,
         args=(os.fdopen(scr, "rb"), os.fdopen(csw, "wb")),
@@ -509,7 +516,7 @@ def salt_client_server():
 
     client_thread.start()
 
-    response = client.lsp.send_request(
+    response = client.protocol.send_request(
         INITIALIZE,
         InitializeParams(
             process_id=12345,
@@ -518,26 +525,24 @@ def salt_client_server():
         ),
     ).result(timeout=CALL_TIMEOUT)
 
-    assert "capabilities" in response
+    assert response.capabilities is not None
 
     yield client, server
 
-    shutdown_response = client.lsp.send_request(SHUTDOWN).result(
+    shutdown_response = client.protocol.send_request(SHUTDOWN).result(
         timeout=CALL_TIMEOUT
     )
     assert shutdown_response is None
 
     # exit the server
-    client.lsp.notify(EXIT)
-    server_thread.join()
+    client.protocol.notify(EXIT)
+    server_thread.join(timeout=CALL_TIMEOUT)
+    assert not server_thread.is_alive()
 
     # exit the client
     client._stop_event.set()
-    try:
-        client.loop._signal_handlers.clear()  # HACK ?
-    except AttributeError:
-        pass
-    client_thread.join()
+    client_thread.join(timeout=CALL_TIMEOUT)
+    assert not client_thread.is_alive()
 
 
 @pytest.fixture()
@@ -627,11 +632,23 @@ root:
 def open_workspace(
     client: LanguageServer, root_uri: str, request_timeout: int = 5
 ) -> None:
-    client.lsp.send_request(
+    client.protocol.send_request(
         INITIALIZE,
         InitializeParams(
             process_id=12345,
             root_uri=root_uri,
+            # These legacy navigation fixtures describe a state tree explicitly;
+            # an unconfigured workspace now deliberately has ambiguous roles.
+            initialization_options={
+                "salt": {
+                    "projects": [
+                        {
+                            "root": root_uri,
+                            "profiles": {"default": {"stateRoots": ["."]}},
+                        }
+                    ]
+                }
+            },
             capabilities=ClientCapabilities(),
         ),
     ).result(timeout=request_timeout)
@@ -641,7 +658,7 @@ def open_file(
     client: LanguageServer, file_path: str, request_timeout: int = 5
 ) -> None:
     with open(file_path) as base_sls:
-        client.lsp.send_request(
+        client.protocol.notify(
             TEXT_DOCUMENT_DID_OPEN,
             DidOpenTextDocumentParams(
                 text_document=TextDocumentItem(
@@ -651,4 +668,12 @@ def open_file(
                     text=base_sls.read(-1),
                 )
             ),
-        ).result(timeout=request_timeout)
+        )
+    # didOpen is a notification. A following request provides a protocol
+    # barrier before tests inspect the workspace, without sleeps.
+    client.protocol.send_request(
+        TEXT_DOCUMENT_DOCUMENT_SYMBOL,
+        DocumentSymbolParams(
+            text_document=TextDocumentIdentifier(uri="file://" + file_path)
+        ),
+    ).result(timeout=request_timeout)

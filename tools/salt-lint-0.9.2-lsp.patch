@@ -1,0 +1,139 @@
+diff --git a/saltlint/cli.py b/saltlint/cli.py
+--- a/saltlint/cli.py
++++ b/saltlint/cli.py
+@@ -20,5 +20,22 @@ def run(args=None):
+     """Run the linter and return the exit code."""
+     parser = init_argument_parser()
+     options = parser.parse_args(args if args is not None else sys.argv[1:])
++    if options.salt_lsp_capabilities:
++        import json
++        import importlib.metadata
++        print(json.dumps({
++            'protocol': 1, 'salt_lint': VERSION,
++            'python': list(sys.version_info[:2]),
++            'pyyaml': importlib.metadata.version('PyYAML'),
++            'pathspec': importlib.metadata.version('pathspec'),
++            'stdin_filename': True,
++        }))
++        return 0
++    if options.stdin_filename:
++        if options.files or not options.c or not os.path.isfile(options.c):
++            parser.error('--stdin-filename requires explicit -c and no FILE arguments')
++        if sys.stdin.isatty():
++            parser.error('--stdin-filename requires stdin text')
+ 
+     stdin_filename = None
++    stdin_text = None
+@@ -29,3 +45,6 @@ def run(args=None):
+     # Read input from STDIN
+-    if not sys.stdin.isatty():
++    if options.stdin_filename:
++        stdin_text = sys.stdin.read()
++        file_names.add(options.stdin_filename)
++    elif not sys.stdin.isatty():
+         with tempfile.NamedTemporaryFile('w', suffix='.sls', delete=False) as stdin_tmpfile:
+@@ -40,4 +59,8 @@ def run(args=None):
+         print(exc)
+         return 2
+ 
++    if options.stdin_filename and options.json:
++        config.json = True
++        config.verbosity = 0
++
+     # Show a help message on the screen
+@@ -64,4 +87,7 @@ def run(args=None):
+     problems = []
+     for file_name in file_names:
+-        runner = Runner(collection, file_name, config, checked_files)
++        if options.stdin_filename:
++            runner = Runner(collection, file_name, config, checked_files, text=stdin_text)
++        else:
++            runner = Runner(collection, file_name, config, checked_files)
+         problems.extend(runner.run())
+@@ -78,3 +104,5 @@ def run(args=None):
+         formatter.process(sorted_problems)
+         return 2
++    if options.stdin_filename and options.json:
++        formatter.process([])
+     return 0
+@@ -87,4 +115,6 @@ def init_argument_parser():
+                         help='one or more files or paths')
+ 
+     parser.add_argument('--version', action='version', version='%(prog)s {}'.format(VERSION))
++    parser.add_argument('--salt-lsp-capabilities', action='store_true')
++    parser.add_argument('--stdin-filename', metavar='PATH')
+     parser.add_argument('-L', dest='listrules', default=False,
+diff --git a/saltlint/linter/collection.py b/saltlint/linter/collection.py
+--- a/saltlint/linter/collection.py
++++ b/saltlint/linter/collection.py
+@@ -13,8 +13,8 @@ from saltlint.utils import load_plugins
+ 
+ class RulesCollection(object):
+ 
+-    def __init__(self, config=Configuration()):
++    def __init__(self, config=None):
+         self.rules = []
+-        self.config = config
++        self.config = Configuration() if config is None else config
+ 
+     def register(self, obj):
+@@ -30,17 +30,17 @@ class RulesCollection(object):
+     def extend(self, more):
+         self.rules.extend(more)
+ 
+-    def run(self, statefile, tags=set(), skip_list=frozenset()):
+-        text = ""
++    def run(self, statefile, tags=set(), skip_list=frozenset(), text=None):
+         matches = []
+ 
+-        try:
+-            with codecs.open(statefile['path'], mode='rb', encoding='utf-8') as f:
+-                text = f.read()
+-        except IOError as e:
+-            print("WARNING: Couldn't open %s - %s" %
+-                  (statefile['path'], e.strerror),
+-                  file=sys.stderr)
+-            return matches
++        if text is None:
++            try:
++                with codecs.open(statefile['path'], mode='rb', encoding='utf-8') as f:
++                    text = f.read()
++            except IOError as e:
++                print("WARNING: Couldn't open %s - %s" %
++                      (statefile['path'], e.strerror),
++                      file=sys.stderr)
++                return matches
+ 
+         for rule in self.rules:
+diff --git a/saltlint/linter/runner.py b/saltlint/linter/runner.py
+--- a/saltlint/linter/runner.py
++++ b/saltlint/linter/runner.py
+@@ -9,12 +9,13 @@ from saltlint.utils import get_file_type
+ 
+ class Runner(object):
+ 
+-    def __init__(self, collection, file_name, config, checked_files=None):
++    def __init__(self, collection, file_name, config, checked_files=None, text=None):
+         self.collection = collection
++        self.text = text
+ 
+         self.files = set()
+         # Assume the provided file name is a directory
+-        if os.path.isdir(file_name):
++        if text is None and os.path.isdir(file_name):
+             self.files.add((os.path.join(file_name, 'init.sls'), 'state'))
+         else:
+             self.files.add((file_name, get_file_type(file_name)))
+@@ -69,6 +70,10 @@ class Runner(object):
+         for file in files:
+             if self.verbosity > 0:
+                 print("Examining %s of type %s" % (file['path'], file['type']))
+-            problems.extend(self.collection.run(file, tags=set(self.tags),
+-                                                skip_list=self.skip_list))
++            if self.text is None:
++                problems.extend(self.collection.run(file, tags=set(self.tags),
++                                                    skip_list=self.skip_list))
++            else:
++                problems.extend(self.collection.run(file, tags=set(self.tags),
++                                                    skip_list=self.skip_list, text=self.text))
+         # Update list of checked files

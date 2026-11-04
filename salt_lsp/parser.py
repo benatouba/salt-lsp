@@ -1,6 +1,7 @@
 """
 Module defining and building an AST from the SLS file.
 """
+
 from __future__ import annotations
 
 import logging
@@ -9,7 +10,7 @@ from dataclasses import dataclass, field
 from os.path import abspath, dirname, exists, isdir, join
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
 
-from pygls.lsp import types
+from lsprotocol import types
 import yaml
 from yaml.tokens import BlockEndToken, ScalarToken
 
@@ -51,7 +52,7 @@ class Position:
         return self > other or self == other
 
     def to_lsp_pos(self) -> types.Position:
-        """Convert this position to pygls' native Position type."""
+        """Return a codepoint position; encode it at the document boundary."""
         return types.Position(line=self.line, character=self.col)
 
 
@@ -181,6 +182,7 @@ class StateParameterNode(AstNode):
             requisites_keys
             + [k + "_any" for k in requisites_keys]
             + [k + "_in" for k in requisites_keys]
+            + ["onfail_all"]
         )
         if key in all_requisites_keys and isinstance(
             self.parent, StateCallNode
@@ -507,6 +509,15 @@ class Parser:
             self._tree.start = token_start
         if isinstance(token, yaml.StreamEndToken):
             self._tree.end = token_end
+        if isinstance(token, yaml.DocumentStartToken):
+            # Each YAML document starts a fresh traversal, not a continuation
+            # of the previous document's (possibly already closed) mappings.
+            self._breadcrumbs = [self._tree]
+            self._block_starts = []
+            self._next_scalar_as_key = False
+            self._next_token_is_value = False
+            self._unprocessed_tokens = None
+            self._last_start = None
 
         if isinstance(
             token,
@@ -698,10 +709,10 @@ class Parser:
         token = None
         try:
             for token in tokens:
-                log.debug(token)
+                log.debug("YAML token: %s", type(token).__name__)
                 self._process_token(token)
         except yaml.scanner.ScannerError as err:
-            log.debug(err)
+            log.debug("YAML scanner error (source omitted)")
             if token:
                 # Properly close the opened blocks
                 for node in reversed(self._breadcrumbs):
@@ -745,6 +756,10 @@ class Parser:
                             col=err.problem_mark.column,
                         )
             return self._tree
+        except yaml.YAMLError:
+            # Reader failures (for example NUL or an unpaired surrogate in an
+            # in-progress buffer) are source errors, not protocol failures.
+            log.debug("YAML reader error (source omitted)")
         return self._tree
 
 
@@ -756,4 +771,11 @@ def parse(document: str) -> Tree:
     :return: the generated AST
     :raises ValueException: for any other renderer but ``jinja|yaml``
     """
-    return Parser(document).parse()
+    parser = Parser(document)
+    try:
+        return parser.parse()
+    except (AttributeError, IndexError) as err:
+        # Token sequences from unrendered templates can outrun the node
+        # traversal. Keep what was recognized rather than losing the document.
+        log.debug(err)
+        return parser._tree

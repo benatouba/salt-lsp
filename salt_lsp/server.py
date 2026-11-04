@@ -3,50 +3,105 @@ Language Server Protocol implementation
 """
 
 import logging
+import os
 import re
-from os.path import basename
-from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
+from functools import wraps
+from typing import Dict, List, Optional, Tuple, Union, cast
 
-from pygls.lsp import types
-from pygls.lsp.methods import (
-    COMPLETION,
+from lsprotocol import types
+from lsprotocol.types import (
+    TEXT_DOCUMENT_COMPLETION as COMPLETION,
     INITIALIZE,
     TEXT_DOCUMENT_DID_OPEN,
-    DEFINITION,
-    DOCUMENT_SYMBOL,
+    TEXT_DOCUMENT_DEFINITION as DEFINITION,
+    TEXT_DOCUMENT_DOCUMENT_SYMBOL as DOCUMENT_SYMBOL,
 )
-from pygls.lsp.types import (
-    CompletionItem,
+from lsprotocol.types import (
     CompletionList,
     CompletionOptions,
     CompletionParams,
     InitializeParams,
 )
-from pygls.server import LanguageServer
+from pygls.lsp.server import LanguageServer
 
 from salt_lsp import utils
+from salt_lsp.catalog import complete_states, project_catalog
+from salt_lsp.custom_sources import discover
+from salt_lsp.custom_definitions import definitions
+from salt_lsp.source_references import SourceView, at_reference
+from salt_lsp.requisite_targets import candidates as requisite_candidates
+from salt_lsp.diagnostics import DiagnosticService
+from salt_lsp.formatting import format_document
+from salt_lsp.linting import LintService
+from salt_lsp.project import ProjectModel, file_path
+from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
+from salt_lsp.state_calls import complete_arguments, hover_state_call
+from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
-    IncludesNode,
-    RequisiteNode,
-    StateParameterNode,
-    Tree,
+    parse,
 )
 
 
 class SaltServer(LanguageServer):
     """Experimental language server for salt states"""
 
+    diagnostics: DiagnosticService
+    lint: LintService
+
     LINE_START_REGEX = re.compile(r"^(\s*)\b", re.MULTILINE)
 
     def __init__(self) -> None:
-        super().__init__(protocol_cls=SaltLspProto)
+        # pygls INFO serializes outbound RPC payloads (including diagnostics,
+        # completion documentation and trust tokens). Never log those payloads.
+        logging.getLogger("pygls").setLevel(logging.WARNING)
+        super().__init__("salt-lsp", "0.0.1", protocol_cls=SaltLspProto)
 
         self._state_name_completions: Dict[str, StateNameCompletion] = {}
 
         self.logger: logging.Logger = logging.getLogger()
         self._state_names: List[str] = []
+        self.projects = ProjectModel()
+        self.exit_process_on_shutdown = False
+        self._reporting_error = False
+        self.tools = ToolService(
+            lambda uri: self.workspace.project_context(uri),
+            lambda: [
+                *self.projects.project_roots,
+                *(utils.FileUri(uri).path for uri in self.workspace.folders),
+                *(
+                    [utils.FileUri(self.workspace.root_uri).path]
+                    if self.workspace.root_uri
+                    else []
+                ),
+            ],
+        )
+
+    def report_server_error(self, error, source) -> None:
+        """Do not answer a failed send with another send.
+
+        Reporting goes through the same closed stream once the client is gone,
+        and without this guard recurses until the interpreter's limit.
+        """
+        if self._reporting_error:
+            return
+        self._reporting_error = True
+        try:
+            super().report_server_error(error, source)
+        finally:
+            self._reporting_error = False
+
+    def shutdown(self) -> None:
+        """Optionally end the process, once the event loop has unwound.
+
+        pygls joins its stdin reader here, which blocks until the client closes
+        stdin. A server told to stop must not wait for that.
+        """
+        if self.exit_process_on_shutdown:
+            logging.shutdown()
+            os._exit(0)
+        super().shutdown()
 
     @property
     def workspace(self) -> SlsFileWorkspace:
@@ -77,7 +132,7 @@ class SaltServer(LanguageServer):
             and params.context.trigger_character == "."
         )
 
-        doc = self.workspace.get_document(params.text_document.uri)
+        doc = self.workspace.get_text_document(params.text_document.uri)
         contents = doc.source
         ind = doc.offset_at_position(params.position)
         last_match = utils.get_last_element_of_iterator(
@@ -86,10 +141,9 @@ class SaltServer(LanguageServer):
         if last_match is None:
             self.logger.debug(
                 "expected to find whitespace before the position (%d, %d) "
-                "but got no regex match for the document: %s",
+                "but got no regex match",
                 params.position.line,
                 params.position.character,
-                contents,
             )
             return []
         state_name = contents[last_match.span()[1] : ind - 1]
@@ -108,30 +162,30 @@ class SaltServer(LanguageServer):
         `starting_uri`. If it does not find it in there, then it will continue
         to search in the includes and returns the first match that it finds.
         """
-        self.logger.debug(
-            "Request to find id '%s' starting in uri '%s'",
-            id_to_find,
-            starting_uri,
-        )
+        self.logger.debug("Request to find an id from uri '%s'", starting_uri)
+        if not utils.is_valid_file_uri(starting_uri):
+            return None
         if (tree := self.workspace.trees.get(starting_uri)) is None:
             self.logger.error(
                 "Cannot search in '%s', no tree present", starting_uri
             )
             return None
 
-        inc_of_uri = self.workspace.includes.get(starting_uri, [])
+        context = self.workspace.project_context(starting_uri)
 
         # FIXME: need to take ordering into account:
         # https://docs.saltproject.io/en/latest/ref/states/compiler_ordering.html#the-include-statement
-        trees_and_uris_to_search: Sequence[
-            Tuple[Tree, Union[str, utils.FileUri]]
-        ] = [(tree, starting_uri)] + [
-            (t, inc)
-            for inc in inc_of_uri
-            if (t := self.workspace.trees.get(inc)) is not None
-        ]
+        view = SourceView(self.workspace, context) if context else None
+        trees_and_uris_to_search = (
+            [
+                (parse(document.source), path.as_uri(), document)
+                for path, document in view.closure(file_path(starting_uri))
+            ]
+            if view
+            else []
+        )
 
-        for tree, uri in trees_and_uris_to_search:
+        for tree, uri, document in trees_and_uris_to_search:
             self.logger.debug("Searching in '%s'", uri)
             matching_states = [
                 state
@@ -142,7 +196,10 @@ class SaltServer(LanguageServer):
                 continue
 
             if (
-                lsp_range := utils.ast_node_to_range(matching_states[0])
+                lsp_range := utils.ast_node_to_range(
+                    matching_states[0],
+                    document,
+                )
             ) is not None:
                 self.logger.debug(
                     "found match at '%s', '%s", lsp_range.start, lsp_range.end
@@ -163,70 +220,255 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     @server.feature(INITIALIZE)
     def initialize(params: InitializeParams) -> None:
         """Set up custom workspace."""
-        del params  # not needed
-        server.lsp.setup_custom_workspace()
+        cast(SaltLspProto, server.protocol).setup_custom_workspace()
+        server.workspace.projects = server.projects
+        server.diagnostics = DiagnosticService(server)
+        server.lint = LintService(server)
+        server.workspace.on_change = refresh_analysis
+        options = params.initialization_options
+        apply_settings(options if options is not None else {})
+        server.window_log_message(
+            types.LogMessageParams(
+                type=types.MessageType.Info,
+                message="Salt analysis defaults to Salt 3008 (not a detected runtime).",
+            )
+        )
         server.logger.debug("Replaced workspace with SlsFileWorkspace")
 
+    @server.feature("salt/projectContext")
+    def project_context(params):
+        """Expose the selected project/profile to any LSP editor."""
+        context = server.workspace.project_context(params.uri)
+        return context.to_lsp() if context else None
+
+    @server.feature(types.TEXT_DOCUMENT_FORMATTING)
+    async def formatting(params: types.DocumentFormattingParams):
+        return await format_document(server, params)
+
+    @server.feature("salt/toolStatus")
+    def tool_status(params):
+        return server.tools.inspect(params.uri, params.tool)
+
+    @server.feature("salt/lintStatus")
+    def lint_status(params):
+        return server.lint.status.get(
+            params.uri,
+            {
+                "status": "inactive",
+                "message": "No open state document is scheduled.",
+            },
+        )
+
+    @server.feature("salt/toolProbe")
+    async def tool_probe(params):
+        return await server.tools.probe(params.uri, params.tool)
+
+    @server.feature("salt/authorizeTool")
+    def authorize_tool(params):
+        return server.tools.authorize(
+            params.uri, params.tool, params.token, params.action
+        )
+
+    @server.feature(types.SHUTDOWN)
+    async def shutdown_tools(*_args):
+        await server.tools.close()
+        await server.lint.close()
+
+    def project_folders():
+        folders = list(server.workspace.folders)
+        if not folders and server.workspace.root_uri:
+            folders = [server.workspace.root_uri]
+        return folders
+
+    def role(uri):
+        try:
+            return server.projects.context(uri, project_folders()).file_role
+        except ValueError:
+            return "generic"
+
+    @server.feature(types.WORKSPACE_DID_CHANGE_CONFIGURATION)
+    def configuration_changed(params: types.DidChangeConfigurationParams):
+        """Apply a complete portable settings snapshot and refresh results."""
+        previous = {
+            uri: server.workspace.project_context(uri)
+            for uri in server.workspace.text_documents
+        }
+        apply_settings(params.settings)
+        server.workspace.invalidate_projects(previous)
+        refresh_analysis()
+
+    @server.feature(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)
+    def watched_files_changed(_params):
+        refresh_analysis()
+
+    def refresh_analysis(changed_uri=None):
+        server.lint.refresh(changed_uri)
+        server.diagnostics.refresh(changed_uri)
+
+    def apply_settings(settings):
+        if isinstance(settings, dict) and "salt" not in settings:
+            return
+        salt = settings.get("salt", {}) if isinstance(settings, dict) else None
+        if isinstance(salt, dict):
+            errors = server.tools.configure(salt.get("tools", []))
+            salt = {k: v for k, v in salt.items() if k != "tools"}
+        else:
+            errors = server.tools.configure([])
+        errors += server.projects.configure(
+            salt,
+            project_folders(),
+        )
+        for error in errors:
+            server.window_show_message(
+                types.ShowMessageParams(
+                    type=types.MessageType.Error, message=error
+                )
+            )
+
+    def with_sources(handler):
+        @wraps(handler)
+        def selected(salt_server, params):
+            context = salt_server.workspace.project_context(
+                params.text_document.uri
+            )
+            entries = (
+                discover(salt_server.workspace, context) if context else []
+            )
+            with project_catalog(entries):
+                return handler(salt_server, params)
+
+        return selected
+
     @server.feature(
-        COMPLETION, CompletionOptions(trigger_characters=["-", "."])
+        COMPLETION,
+        CompletionOptions(trigger_characters=["-", ".", "'", '"', "(", ","]),
     )
+    @with_sources
     def completions(
         salt_server: SaltServer, params: CompletionParams
     ) -> Optional[CompletionList]:
         """Returns completion items."""
-        if (
-            params.context is not None
-            and params.context.trigger_character == "."
-        ):
-            return CompletionList(
-                is_incomplete=False,
-                items=[
-                    CompletionItem(label=sub_name, documentation=docs)
-                    for sub_name, docs in salt_server.complete_state_name(
-                        params
-                    )
-                ],
-            )
-
-        if (
-            tree := salt_server.workspace.trees.get(params.text_document.uri)
-        ) is None:
+        if not utils.is_valid_file_uri(params.text_document.uri):
             return None
-
-        path = utils.construct_path_to_position(tree, params.position)
-        if (
-            path
-            and isinstance(path[-1], IncludesNode)
-            or basename(params.text_document.uri) == "top.sls"
-            and isinstance(path[-1], StateParameterNode)
+        if role(params.text_document.uri) not in (
+            "state",
+            "state-top",
+            "pillar",
+            "pillar-top",
         ):
-            file_path = utils.FileUri(params.text_document.uri).path
-            includes = utils.get_sls_includes(file_path)
-            return CompletionList(
-                is_incomplete=False,
-                items=[
-                    CompletionItem(label=f" {include}") for include in includes
-                ],
+            return None
+        if (
+            params.text_document.uri
+            not in salt_server.workspace.text_documents
+        ):
+            return None
+        context = salt_server.workspace.project_context(
+            params.text_document.uri
+        )
+        if context:
+            reference_result = at_reference(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(
+                    params.text_document.uri
+                ),
+                params.position,
+                context,
+                completion=True,
             )
+            if reference_result is not None:
+                return reference_result
+        if role(params.text_document.uri) == "state":
+            context = salt_server.workspace.project_context(
+                params.text_document.uri
+            )
+            if context is not None:
+                document = salt_server.workspace.get_text_document(
+                    params.text_document.uri
+                )
+                result = complete_execution_calls(
+                    document, params.position, context.salt_version
+                )
+                if result is not None:
+                    return result
+                result = complete_states(
+                    salt_server.workspace.get_text_document(
+                        params.text_document.uri
+                    ),
+                    params.position,
+                    context.salt_version,
+                )
+                if result is None:
+                    result = complete_arguments(
+                        salt_server.workspace.get_text_document(
+                            params.text_document.uri
+                        ),
+                        params.position,
+                        context.salt_version,
+                    )
+                if result is not None:
+                    return result
+
         return None
 
+    @server.feature(types.TEXT_DOCUMENT_HOVER)
+    @with_sources
+    def hover(
+        salt_server: SaltServer, params: types.HoverParams
+    ) -> Optional[types.Hover]:
+        """Document the state call under the cursor from the active catalog."""
+        uri = params.text_document.uri
+        if not utils.is_valid_file_uri(uri) or role(uri) != "state":
+            return None
+        context = salt_server.workspace.project_context(uri)
+        if context is None or uri not in salt_server.workspace.text_documents:
+            return None
+        document = salt_server.workspace.get_text_document(uri)
+        return hover_execution_call(
+            document, params.position, context.salt_version
+        ) or hover_state_call(
+            salt_server.workspace.get_text_document(uri),
+            params.position,
+            context.salt_version,
+        )
+
     @server.feature(DEFINITION)
+    @with_sources
     def goto_definition(
         salt_server: SaltServer, params: types.DeclarationParams
-    ) -> Optional[types.Location]:
+    ) -> Optional[Union[types.Location, List[types.Location]]]:
         uri = params.text_document.uri
-        if (tree := salt_server.workspace.trees.get(uri)) is None:
+        if not utils.is_valid_file_uri(uri):
             return None
-        path = utils.construct_path_to_position(tree, params.position)
-
-        # Going to definition is only handled on requisites ids
-        if not isinstance(path[-1], RequisiteNode):
+        if role(uri) not in ("state", "pillar", "state-top", "pillar-top"):
             return None
-
-        if (id_to_find := cast(RequisiteNode, path[-1]).reference) is None:
-            return None
-
-        return salt_server.find_id_in_doc_and_includes(id_to_find, uri)
+        context = salt_server.workspace.project_context(uri)
+        if context and uri in salt_server.workspace.text_documents:
+            locations = at_reference(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context,
+            )
+            if locations:
+                return locations
+            if role(uri) != "state":
+                return None
+            locations = definitions(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context.salt_version,
+            )
+            if locations:
+                return locations
+        if context and uri in salt_server.workspace.text_documents:
+            return requisite_candidates(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context,
+            )
+        return None
 
     @server.feature(TEXT_DOCUMENT_DID_OPEN)
     def did_open(
@@ -240,12 +482,11 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
             "adding text document '%s' to the workspace",
             params.text_document.uri,
         )
-        doc = salt_server.workspace.get_document(params.text_document.uri)
         return types.TextDocumentItem(
             uri=params.text_document.uri,
             language_id=SLS_LANGUAGE_ID,
             text=params.text_document.text or "",
-            version=doc.version,
+            version=params.text_document.version,
         )
 
     @server.feature(DOCUMENT_SYMBOL)
@@ -254,6 +495,37 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     ) -> Optional[
         Union[List[types.DocumentSymbol], List[types.SymbolInformation]]
     ]:
-        return salt_server.workspace.document_symbols.get(
+        if not utils.is_valid_file_uri(params.text_document.uri):
+            return []
+        if role(params.text_document.uri) != "state":
+            return []
+        symbols = salt_server.workspace.document_symbols.get(
             params.text_document.uri, []
         )
+        text_capabilities = salt_server.client_capabilities.text_document
+        symbol_capabilities = (
+            text_capabilities.document_symbol if text_capabilities else None
+        )
+        if (
+            symbol_capabilities
+            and symbol_capabilities.hierarchical_document_symbol_support
+        ):
+            return symbols
+        flattened = []
+
+        def flatten(items, parent=None):
+            for symbol in items:
+                flattened.append(
+                    types.SymbolInformation(
+                        name=symbol.name,
+                        kind=symbol.kind,
+                        location=types.Location(
+                            params.text_document.uri, symbol.range
+                        ),
+                        container_name=parent,
+                    )
+                )
+                flatten(symbol.children or [], symbol.name)
+
+        flatten(symbols)
+        return flattened
