@@ -31,6 +31,8 @@ minor version with **pygls 2.0.1**, **lsprotocol 2025.0.0**, and **PyYAML 6.0.3*
 Other operating systems are not yet acceptance-tested. Salt, salt-lint, an
 editor extension, and generated metadata are **not** installation requirements.
 The server runtime is independent of the Salt version a project targets.
+Optional external tools run only after explicit approval; see
+[docs/external-tools.md](docs/external-tools.md).
 
 Build this checkout with [uv](https://docs.astral.sh/uv/) and install the wheel
 into a dedicated environment (the fork is not yet a new PyPI release):

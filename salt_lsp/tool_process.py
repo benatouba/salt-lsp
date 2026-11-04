@@ -15,6 +15,27 @@ class ProcessResult:
     stdout: bytes = b""
     stderr: bytes = b""
     returncode: int | None = None
+    message: str = ""
+
+
+async def _hold(budget, until=None):
+    """Spend cleanup time that cancellation cannot shorten.
+
+    Loop teardown cancels every task once, so cleanup must neither run in a
+    separately cancellable task nor let a CancelledError abandon a process.
+    Returns whether `until` was set within the budget.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget
+    while not (until and until.is_set()):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.sleep(min(remaining, 0.01))
+        except asyncio.CancelledError:
+            pass
+    return bool(until and until.is_set())
 
 
 class _Capture(asyncio.SubprocessProtocol):
@@ -143,13 +164,15 @@ class ProcessRunner:
         status = "execution-failure"
         cancelled = False
         try:
-            try:
-                transport, _ = await asyncio.shield(spawn)
-            except asyncio.CancelledError:
-                # Acquire the handle even if cancellation raced OS spawn.
-                cancelled = True
-                transport, _ = await spawn
-                raise
+            # Acquire the handle even if cancellation, repeatedly, races OS spawn.
+            while not spawn.done():
+                try:
+                    await asyncio.wait({spawn})
+                except asyncio.CancelledError:
+                    cancelled = True
+            transport, _ = spawn.result()
+            if cancelled:
+                raise asyncio.CancelledError
             if transport is None:
                 return ProcessResult("stale")
             pipe = transport.get_pipe_transport(0)
@@ -157,6 +180,8 @@ class ProcessRunner:
             async def feed():
                 try:
                     for index in range(0, len(data), 16384):
+                        if pipe.is_closing():
+                            break
                         while pipe.get_write_buffer_size() > 32768:
                             await asyncio.sleep(0.005)
                         pipe.write(data[index : index + 16384])
@@ -199,16 +224,7 @@ class ProcessRunner:
         except (OSError, ValueError):
             status = "spawn-failure"
         finally:
-            cleanup_task = asyncio.create_task(
-                self._cleanup(transport, capture, tasks)
-            )
-            while True:
-                try:
-                    cleanup_ok = await asyncio.shield(cleanup_task)
-                    break
-                except asyncio.CancelledError:
-                    cancelled = True
-            if not cleanup_ok:
+            if not await self._cleanup(transport, capture, tasks):
                 status = "cleanup-failure"
         if cancelled:
             raise asyncio.CancelledError
@@ -225,25 +241,31 @@ class ProcessRunner:
 
     @staticmethod
     async def _cleanup(transport, capture, tasks):
-        cleanup_ok = True
-        if transport is not None:
-            pid = transport.get_pid()
-            # Always clean the group, even when its leader already exited.
-            for sig, grace in ((signal.SIGTERM, 0.1), (signal.SIGKILL, 0.1)):
-                try:
-                    os.killpg(pid, sig)
-                except ProcessLookupError:
-                    break
-                except OSError:
-                    cleanup_ok = False
-                    break
-                await asyncio.sleep(grace)
-            transport.close()  # public API closes pipes even if an escaped child holds them
-            try:
-                await asyncio.wait_for(capture.closed.wait(), 0.3)
-            except TimeoutError:
-                cleanup_ok = False
+        """Stop the group, then wait for EOF so no written output is dropped.
+
+        False means a process escaped the group and kept its pipes open, or the
+        transport would not close: the captured output may be incomplete.
+        """
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if transport is None:
+            return True
+        cleanup_ok = True
+        pid = transport.get_pid()
+        # Always clean the group, even when its leader already exited.
+        for sig, grace in ((signal.SIGTERM, 0.1), (signal.SIGKILL, 0.1)):
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                break
+            except OSError:
+                cleanup_ok = False
+                break
+            await _hold(grace)
+        if not await _hold(0.3, capture.closed):
+            cleanup_ok = False
+        # Public API: closes pipes even when an escaped child still holds them.
+        transport.close()
+        if not await _hold(0.1, capture.closed):
+            cleanup_ok = False
         return cleanup_ok

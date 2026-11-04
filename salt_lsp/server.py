@@ -3,6 +3,7 @@ Language Server Protocol implementation
 """
 
 import logging
+import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
@@ -52,6 +53,8 @@ class SaltServer(LanguageServer):
         self.logger: logging.Logger = logging.getLogger()
         self._state_names: List[str] = []
         self.projects = ProjectModel()
+        self.exit_process_on_shutdown = False
+        self._reporting_error = False
         self.tools = ToolService(
             lambda uri: self.workspace.project_context(uri),
             lambda: [
@@ -64,6 +67,31 @@ class SaltServer(LanguageServer):
                 ),
             ],
         )
+
+    def report_server_error(self, error, source) -> None:
+        """Do not answer a failed send with another send.
+
+        Reporting goes through the same closed stream once the client is gone,
+        and without this guard recurses until the interpreter's limit.
+        """
+        if self._reporting_error:
+            return
+        self._reporting_error = True
+        try:
+            super().report_server_error(error, source)
+        finally:
+            self._reporting_error = False
+
+    def shutdown(self) -> None:
+        """Optionally end the process, once the event loop has unwound.
+
+        pygls joins its stdin reader here, which blocks until the client closes
+        stdin. A server told to stop must not wait for that.
+        """
+        if self.exit_process_on_shutdown:
+            logging.shutdown()
+            os._exit(0)
+        super().shutdown()
 
     @property
     def workspace(self) -> SlsFileWorkspace:
@@ -124,11 +152,7 @@ class SaltServer(LanguageServer):
         `starting_uri`. If it does not find it in there, then it will continue
         to search in the includes and returns the first match that it finds.
         """
-        self.logger.debug(
-            "Request to find id '%s' starting in uri '%s'",
-            id_to_find,
-            starting_uri,
-        )
+        self.logger.debug("Request to find an id from uri '%s'", starting_uri)
         if not utils.is_valid_file_uri(starting_uri):
             return None
         if (tree := self.workspace.trees.get(starting_uri)) is None:

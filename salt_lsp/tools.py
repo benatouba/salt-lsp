@@ -4,7 +4,7 @@ No setting grants trust. Editors approve a selection returned by inspect(),
 using its opaque token. Providers must use run(), never spawn independently.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import asyncio
 import hashlib
 import logging
@@ -18,6 +18,27 @@ import yaml
 
 from salt_lsp.project import ProjectContext
 from salt_lsp.tool_process import ProcessRunner, ProcessResult
+
+
+RESULT_MESSAGES = {
+    "clean": "Tool completed.",
+    "timeout": "Tool exceeded its execution deadline and was stopped.",
+    "input-limit": "The document exceeds the 4 MiB tool input budget; the tool was not started.",
+    "output-limit": "Tool exceeded the output budget and was stopped; no partial result is usable.",
+    "spawn-failure": "Could not start the selected tool; check its interpreter, permissions and dependencies.",
+    "execution-failure": "Communication with the tool failed; no result is usable.",
+    "tool-failure": "Tool exited unsuccessfully; check the selected configuration and installed dependencies.",
+    "cancelled": "Tool cancelled and cleanup completed; request fresh results if needed.",
+    "stale": "Project, permission, config or document changed; request fresh results.",
+    "busy": "Tool queue is full; retry after current jobs complete.",
+    "cleanup-failure": "A tool process could not be stopped or kept its output open; no result is usable. Inspect the installed executable before approving again.",
+    "unsupported-platform": "External execution currently requires Linux process-group supervision; static analysis remains available.",
+}
+
+
+def described(result: ProcessResult) -> ProcessResult:
+    """Attach the sanitized user-facing message; never derived from output."""
+    return replace(result, message=RESULT_MESSAGES[result.status])
 
 
 class ToolError(Exception):
@@ -40,23 +61,46 @@ def bounded_read(path, limit):
     return data
 
 
-def safe_route(path, roots, hops=0):
-    """Reject every repository-controlled symlink hop, not just final targets."""
-    if hops > 40:
+def safe_route(path, roots):
+    """Reject every repository-controlled route, not just the final target.
+
+    Walks components as the kernel does, so `..` applies to a symlink's target
+    rather than to its spelling. Anything unreadable counts as unsafe.
+    """
+    path = Path(path)
+    if not path.is_absolute():
         return False
-    path = Path(os.path.normpath(path))
-    if not path.is_absolute() or any(
-        path.is_relative_to(root) for root in roots
-    ):
-        return False
-    for parent in [*reversed(path.parents), path]:
-        if parent.is_symlink():
-            target = parent.readlink()
-            if not target.is_absolute():
-                target = parent.parent / target
-            target = target / path.relative_to(parent)
-            return safe_route(target, roots, hops + 1)
-    return True
+
+    def inside(candidate):
+        return any(candidate.is_relative_to(root) for root in roots)
+
+    current = Path(path.anchor)
+    pending = list(reversed(path.parts[1:]))
+    hops = 0
+    while pending:
+        part = pending.pop()
+        if part == "..":
+            current = current.parent
+            continue
+        candidate = current / part
+        if inside(candidate):
+            return False
+        try:
+            if not candidate.is_symlink():
+                current = candidate
+                continue
+            target = Path(os.readlink(candidate))
+        except OSError:
+            return False
+        hops += 1
+        if hops > 40:
+            return False
+        if target.is_absolute():
+            current = Path(target.anchor)
+            pending.extend(reversed(target.parts[1:]))
+        else:
+            pending.extend(reversed(target.parts))
+    return not inside(current)
 
 
 def rule_files(root, budget):
@@ -286,6 +330,7 @@ class ToolService:
             ).encode()
         )
         config = None
+        config_mapping = {}
         rules = []
         rule_bytes = 0
         rule_entries = 0
@@ -339,9 +384,9 @@ class ToolService:
                     ) from None
                 identity.update(content)
                 config = path
+                config_mapping = parsed or {}
         if name == "salt-lint" and config:
-            parsed = yaml.safe_load(bounded_read(config, 65536)) or {}
-            declared = parsed.get("rulesdir", [])
+            declared = config_mapping.get("rulesdir", [])
             if not isinstance(declared, list) or any(
                 not isinstance(p, str) for p in declared
             ):
@@ -497,33 +542,32 @@ class ToolService:
         status = self.inspect(uri, name)
         token = status.get("token")
         if status["status"] != "ready":
-            return ProcessResult(status["status"])
+            return ProcessResult(status["status"], message=status["message"])
         assert isinstance(token, str)
         selection = self.tokens[token]
         epoch = self.epoch
 
-        def valid():
+        def current():
             return (
                 epoch == self.epoch
                 and token in self.grants
                 and current_version() == version
-                and self.inspect(uri, name).get("token") == token
             )
+
+        def valid():
+            """Also rereads the selected files, so it is not for every tick."""
+            return current() and self.inspect(uri, name).get("token") == token
 
         # A controlled empty config is preferable to any ancestor/HOME fallback.
         with tempfile.TemporaryDirectory(prefix="salt-lsp-tool-") as directory:
             default = Path(directory) / "config.yaml"
             default.write_text("{}\n", encoding="utf-8")
             config = selection.config or default
-            env = dict(os.environ)
-            for key in (
-                "PYTHONPATH",
-                "PYTHONHOME",
-                "PYTHONSTARTUP",
-                "PYTHONINSPECT",
-                "VIRTUAL_ENV",
-            ):
-                env.pop(key, None)
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("PYTHON") and key != "VIRTUAL_ENV"
+            }
             env["PYTHONSAFEPATH"] = "1"
             env["PYTHONNOUSERSITE"] = "1"
             env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -553,22 +597,28 @@ class ToolService:
             self.jobs.add(job)
 
             async def monitor():
+                ticks = 0
                 while not job.done():
                     await asyncio.sleep(0.05)
-                    if not valid():
+                    ticks += 1
+                    if not (valid() if ticks % 10 == 0 else current()):
                         job.cancel()
                         return
 
             watcher = asyncio.create_task(monitor())
             try:
                 result = await job
-                return result if valid() else ProcessResult("stale")
             except asyncio.CancelledError:
-                return ProcessResult("cancelled")
+                # Revocation or staleness is a result. A cancelled caller is not:
+                # swallowing that would defeat its timeout or supersession.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+                return described(ProcessResult("cancelled"))
             finally:
-                watcher.cancel()
-                await asyncio.gather(watcher, return_exceptions=True)
                 self.jobs.discard(job)
+                watcher.cancel()
+            return described(result if valid() else ProcessResult("stale"))
 
     async def probe(self, uri, name):
         """Version probes are execution, behind exactly the same gate as runs."""
@@ -592,28 +642,14 @@ class ToolService:
             version=None,
             current_version=lambda: None,
         )
-        status = result.status
-        if status == "clean" and not result.stdout.startswith(
-            b"yamlfmt 0.21.0 "
-        ):
-            status = "unsupported-capability"
-        messages = {
-            "clean": "yamlfmt 0.21.0 compatibility probe completed.",
-            "unsupported-capability": "Expected yamlfmt 0.21.0; select the supported version explicitly.",
-            "timeout": "Tool exceeded its execution deadline and was stopped.",
-            "output-limit": "Tool exceeded the output budget and was stopped; no partial result is usable.",
-            "spawn-failure": "Could not start the selected tool; check its interpreter, permissions and dependencies.",
-            "tool-failure": "Tool exited unsuccessfully; check the selected configuration and installed dependencies.",
-            "cancelled": "Tool cancelled and cleanup completed; request fresh results if needed.",
-            "stale": "Project, permission, config or document changed; request fresh results.",
-            "busy": "Tool queue is full; retry after current jobs complete.",
-            "cleanup-failure": "Tool cleanup failed; inspect the installed executable before approving again.",
-            "unsupported-platform": "External execution currently requires Linux process-group supervision; static analysis remains available.",
-        }
+        if result.status != "clean":
+            return {"status": result.status, "message": result.message}
+        if not result.stdout.startswith(b"yamlfmt 0.21.0 "):
+            return {
+                "status": "unsupported-capability",
+                "message": "Expected yamlfmt 0.21.0; select the supported version explicitly.",
+            }
         return {
-            "status": status,
-            "message": messages.get(
-                status,
-                "External tool refused; inspect selection and permissions.",
-            ),
+            "status": "clean",
+            "message": "yamlfmt 0.21.0 compatibility probe completed.",
         }

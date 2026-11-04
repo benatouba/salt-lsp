@@ -37,9 +37,12 @@ until corrected. Tools settings fail closed, unlike recoverable static-project
 settings. Every received Salt configuration snapshot revokes previous grants.
 
 Omitting `executable` searches absolute PATH entries, skipping empty/relative
-entries and every path or symlink hop through any editor folder or configured
-project root. Unsafe candidates do not mask later installed candidates. Normal
+entries, unreadable routes, and every path or symlink hop through any editor
+folder or configured project root (`..` is applied the way the kernel applies it,
+after symlinks). Unsafe candidates do not mask later installed candidates. Normal
 outside-to-outside installation symlinks (including Nix profiles) are supported.
+A tool installed under a project root, such as `~/.local/bin` when the repository
+is the home directory, is not discovered: select it explicitly instead.
 Explicit selection never falls back and may deliberately name a workspace tool;
 the user must still approve it. Invocation preserves virtualenv symlink spelling
 and revalidates executable identity before launch.
@@ -99,6 +102,8 @@ Statuses distinguish `missing-tool`, `denied-trust`, `invalid-config`, `ready`,
 `busy`, `cancelled`, `stale`, and `cleanup-failure`. Messages are sanitized;
 child stdout/stderr, source text, config contents, and exception output are never
 logged or returned in LSP status. Static features remain available on failure.
+`cleanup-failure` means a process escaped the group and kept its pipes open, or
+could not be stopped: the output may be incomplete and must not be used.
 
 ## Stable Python provider API (#17 / #18)
 
@@ -135,14 +140,18 @@ stamp, not merely a reusable LSP integer (see workspace `document_stamp`). Use
 `None` only for work without document contents, such as version probes. They
 are mandatory, preventing consumers from accidentally omitting stale-result
 checks. The service also captures the full `ProjectContext` and trust epoch.
-It rechecks after waiting for capacity, monitors validity every 50 ms while
-running, and checks again before returning output. Profile/context, config/rule
-edits, executable changes, document edits/close, and revocation suppress old
-results. Changes observed as invalid also forget previous grants; restoring old
+It rechecks after waiting for capacity, and checks again before returning
+output. While a job runs, the document stamp and grant are checked every 50 ms;
+the selected files are reread every 500 ms, because that hashes the whole
+selection on the event loop. Profile/context, config/rule edits, executable
+changes, document edits/close, and revocation suppress old results. Changes observed as invalid also forget previous grants; restoring old
 contents does not resurrect an observed-invalid selection's approval.
 
-`ProcessResult` has `status`, `stdout: bytes`, `stderr: bytes`, and `returncode`.
-Only use raw output after checking the expected status/return code. A lint
+`ProcessResult` has `status`, `message`, `stdout: bytes`, `stderr: bytes`, and
+`returncode`. `message` is always set by `run()`, is actionable, and never contains
+child output, so show it instead of writing your own text for a status. Only use
+raw output after checking the expected status/return code. A nonzero exit is
+`tool-failure` with the output retained. A lint
 adapter may explicitly accept a nonzero findings exit code, but must never treat
 timeout, overflow, cancellation, stale, or malformed output as clean diagnostics.
 Parsing, diagnostics ownership, lint debounce, formatter eligibility/edits, and
@@ -154,6 +163,12 @@ observed selection invalidation. The callback is synchronous server code,
 receives no source, and must leave built-in diagnostics intact. There are at
 most 16 subscriptions; call `unsubscribe()` when disposing a provider.
 Revocation does not disable static analysis.
+
+Cancellation follows normal asyncio rules. Cancelling the task awaiting `run()`,
+including through `asyncio.timeout`, stops the process group, waits for cleanup
+and then raises `CancelledError`, so a superseding debounce can simply cancel and
+await its previous task. When the *service* stops a job (revocation, settings, or
+an observed change), `run()` instead returns a `cancelled` or `stale` result.
 
 ## Resource and lifecycle guarantees
 
@@ -169,13 +184,21 @@ Revocation does not disable static analysis.
   spawn/filesystem operations are not a hard real-time deadline guarantee.
 - Every invocation gets a new Linux process group. Normal exit, timeout,
   overflow, cancellation, revoke and shutdown clean the **whole group**, even if
-  the leader already exited: TERM grace 100 ms, KILL grace 100 ms, pipe/transport
-  join up to 300 ms. Public transport ownership closes pipes if an escaped
-  descendant holds descriptors. The concurrency slot stays held through cleanup.
-- Shielded, strongly owned spawn/cleanup tasks survive repeated cancellation;
-  cleanup is awaited, never detached. stdout/stdin never inherit LSP framing.
-- Launch environment removes Python path/startup overrides, enables safe Python
-  path/no-user-site/no-bytecode, filters project/relative PATH entries, and gives HOME/XDG
+  the leader already exited: TERM grace 100 ms, then KILL grace 100 ms, only while
+  group members remain. Output is then drained to EOF for up to 300 ms, so nothing
+  already written is lost and a result is complete. If EOF does not arrive, an
+  escaped descendant holds the pipes: they are closed within a further 100 ms and
+  the status is `cleanup-failure`. A clean exit costs no grace time. The
+  concurrency slot stays held through cleanup.
+- Cleanup absorbs cancellation, including the single cancellation of every task
+  at event-loop teardown, and is awaited, never detached. The LSP `shutdown`
+  request, the `exit` notification, stdin EOF and SIGTERM all stop running groups
+  before the stdio server process ends. SIGKILL of the server cannot; an orphaned
+  tool then sees closed pipes but may keep running. stdout/stdin never inherit
+  LSP framing.
+- Launch environment removes every `PYTHON*` variable and `VIRTUAL_ENV`, enables
+  safe Python path/no-user-site/no-bytecode, filters project/relative PATH entries,
+  and gives HOME/XDG
   an owned temporary directory. Other environment variables remain for normal
   user installations and Nix wrappers. This is not a hermetic environment.
 
@@ -190,9 +213,9 @@ observations. Never present approval or revocation as preventing all side effect
 
 ## Acceptance tests
 
-`tests/test_tools.py` uses actual stdio LSP sessions, controlled executable
-processes, and the public provider/process seams. No private runner state is
-asserted. Run the real installed compatibility/config probe as well:
+`tests/test_tools.py` and `tests/test_tools_boundary.py` use actual stdio LSP
+sessions, controlled executable processes, and the public provider/process seams.
+No private runner state is asserted. Run the real installed compatibility/config probe as well:
 
 ```sh
 SALT_LSP_TEST_YAMLFMT=/absolute/user/installed/yamlfmt pytest tests/test_tools.py

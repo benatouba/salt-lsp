@@ -309,7 +309,9 @@ print('MUST NOT PUBLISH')
         assert result.status in ("cancelled", "stale")
         assert result.stdout == b""
         cleared = []
-        unsubscribe = service.on_invalidate(lambda: cleared.append("tool-results"))
+        unsubscribe = service.on_invalidate(
+            lambda: cleared.append("tool-results")
+        )
         service.invalidate()
         assert cleared == ["tool-results"]
         unsubscribe()
