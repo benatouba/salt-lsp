@@ -525,6 +525,7 @@ class ToolService:
                 "message": "Selection changed; inspect and explicitly approve the current selection.",
             }
         self.grants.add(token)
+        self._notify()
         return self.inspect(uri, name)
 
     async def run(
@@ -631,10 +632,34 @@ class ToolService:
         status = self.inspect(uri, name)
         if status["status"] != "ready":
             return status
-        if name != "yamlfmt":
+        if name == "salt-lint":
+            # The patched CLI's handshake precedes config/rule loading. No stock
+            # --version fallback, Python bridge or source import is permitted.
+            from salt_lsp.linting import CAPABILITIES
+
+            result = await self.run(
+                uri,
+                name,
+                lambda selection, config: ["--salt-lsp-capabilities"],
+                version=None,
+                current_version=lambda: None,
+            )
+            try:
+                import json
+
+                compatible = (
+                    result.status == "clean"
+                    and json.loads(result.stdout) == CAPABILITIES
+                )
+            except (ValueError, UnicodeError, RecursionError):
+                compatible = False
             return {
-                "status": "unsupported-capability",
-                "message": "salt-lint requires the explicitly selected patched adapter's capability handshake (#17); no stock probe was executed.",
+                "status": "clean" if compatible else "unsupported-capability",
+                "message": (
+                    "Patched salt-lint protocol 1 verified."
+                    if compatible
+                    else "Select the documented patched salt-lint 0.9.2 adapter with CPython 3.12, PyYAML 6.0.3 and pathspec 1.1.1; stock salt-lint is unsupported."
+                ),
             }
         result = await self.run(
             uri,

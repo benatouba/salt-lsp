@@ -32,7 +32,7 @@ Other operating systems are not yet acceptance-tested. Salt, salt-lint, an
 editor extension, and a metadata-generation step are **not** installation requirements.
 The server runtime is independent of the Salt version a project targets.
 Optional external tools run only after explicit approval; see
-[docs/external-tools.md](docs/external-tools.md).
+[EXTERNAL_TOOLS.md](EXTERNAL_TOOLS.md).
 
 Build this checkout with [uv](https://docs.astral.sh/uv/) and install the wheel
 into a dedicated environment (the fork is not yet a new PyPI release):

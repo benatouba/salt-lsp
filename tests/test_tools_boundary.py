@@ -597,17 +597,18 @@ def test_invalid_selected_config_is_actionable_and_static_survives(
 # Custom rules and trust
 
 
-def test_custom_rules_never_run_before_or_because_of_approval(
+def test_custom_rules_never_imported_by_server_or_unverified_adapter(
     tmp_path, clients
 ):
     """Sentinels cover the binary and every rule file, including at import."""
     marker = tmp_path / "executed"
+    binary_marker = tmp_path / "binary-executed"
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "__init__.py").write_text(touching(marker))
     (rules / "custom.py").write_text(touching(marker))
     (tmp_path / ".salt-lint").write_text("rulesdir: [rules]\n")
-    binary = executable(tmp_path / "salt-lint", touching(marker))
+    binary = executable(tmp_path / "salt-lint", touching(binary_marker))
     client = clients(
         tmp_path,
         settings=single_tool(
@@ -628,12 +629,16 @@ def test_custom_rules_never_run_before_or_because_of_approval(
     assert client.request("salt/toolProbe", params)["status"] == "denied-trust"
     assert client.symbols(document)
     assert not marker.exists()
+    assert not binary_marker.exists()
     assert approve(client, params)["status"] == "ready"
     assert (
         client.request("salt/toolProbe", params)["status"]
         == "unsupported-capability"
     )
     assert not marker.exists()
+    # A requested probe now executes the explicitly trusted binary. The server
+    # does not import custom rules or fall back to a Python bridge on failure.
+    assert binary_marker.exists()
 
 
 @pytest.mark.parametrize("change", ["add", "remove", "rename", "symlink"])
