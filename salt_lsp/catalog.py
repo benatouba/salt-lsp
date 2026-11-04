@@ -11,6 +11,7 @@ import gzip
 from importlib.resources import files
 import json
 import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from lsprotocol import types
@@ -35,11 +36,16 @@ def project_catalog(entries):
 def load_catalog(version: str, kind: str = "state") -> dict[str, Any]:
     """Select the packaged API plus the current request's project declarations."""
     catalog = _packaged_catalog(version, kind)
-    entries = [e for e in _PROJECT_ENTRIES.get() if e["kind"] == kind]
+    project = [e for e in _PROJECT_ENTRIES.get() if e["kind"] == kind]
+    shadows = {e["source_identity"] for e in project if e.get("source_only")}
+    entries = [e for e in project if not e.get("source_only")]
+    packaged = [
+        e
+        for e in catalog["entries"]
+        if PurePosixPath(e["provider"]).stem not in shadows
+    ]
     return (
-        {**catalog, "entries": [*catalog["entries"], *entries]}
-        if entries
-        else catalog
+        {**catalog, "entries": [*packaged, *entries]} if project else catalog
     )
 
 
@@ -180,13 +186,18 @@ def complete_states(
             ):
                 continue
             provider = f"{entry['provider']}:{entry['line']}"
+            origin = (
+                "Project declaration"
+                if entry.get("uri")
+                else f"Salt {release}"
+            )
             items.append(
                 types.CompletionItem(
                     label=entry["function"],
                     kind=types.CompletionItemKind.Function,
-                    detail=f"{format_signature(entry)} — Salt {release}; {provider}",
+                    detail=f"{format_signature(entry)} — {origin}; {provider}",
                     documentation=(
-                        f"Salt {release} source-known state API ({provider}).\n"
+                        f"{origin} source-known state API ({provider}).\n"
                         "Catalog membership is not proof of provider availability. "
                         "Runtime gates/dependencies and decorators are not evaluated.\n\n"
                         + entry["documentation"]
