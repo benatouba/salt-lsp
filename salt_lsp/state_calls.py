@@ -269,9 +269,14 @@ def _describe(entry: dict[str, Any], release: str) -> str:
     documentation = (
         entry["documentation"] or "The catalog has no documentation for this."
     )
+    origin = (
+        "Project declaration"
+        if entry.get("uri")
+        else f"Salt {release} source-known {entry['kind']} API"
+    )
     return (
         f"{format_signature(entry)}\n\n"
-        f"Salt {release} source-known {entry['kind']} API ({provider}).\n{alias}"
+        f"{origin} ({provider}).\n{alias}"
         "Catalog membership is not proof of provider availability. "
         "Runtime gates/dependencies and decorators are not evaluated.\n\n"
         f"{documentation}"

@@ -5,6 +5,8 @@ The data model keys providers separately and reserves ``kind`` for future APIs.
 """
 
 from functools import lru_cache
+from contextlib import contextmanager
+from contextvars import ContextVar
 import gzip
 from importlib.resources import files
 import json
@@ -15,8 +17,34 @@ from lsprotocol import types
 from pygls.workspace import TextDocument
 
 
-@lru_cache(maxsize=6)
+_PROJECT_ENTRIES: ContextVar[tuple[dict, ...]] = ContextVar(
+    "project_entries", default=()
+)
+
+
+@contextmanager
+def project_catalog(entries):
+    """Request-local source overlay; never change the cached packaged catalogs."""
+    token = _PROJECT_ENTRIES.set(tuple(entries))
+    try:
+        yield
+    finally:
+        _PROJECT_ENTRIES.reset(token)
+
+
 def load_catalog(version: str, kind: str = "state") -> dict[str, Any]:
+    """Select the packaged API plus the current request's project declarations."""
+    catalog = _packaged_catalog(version, kind)
+    entries = [e for e in _PROJECT_ENTRIES.get() if e["kind"] == kind]
+    return (
+        {**catalog, "entries": [*catalog["entries"], *entries]}
+        if entries
+        else catalog
+    )
+
+
+@lru_cache(maxsize=6)
+def _packaged_catalog(version: str, kind: str = "state") -> dict[str, Any]:
     """Read only packaged, version-specific metadata; no Salt or project imports."""
     if version not in ("3006", "3007", "3008"):
         raise ValueError(f"unsupported Salt catalog: {version}")
