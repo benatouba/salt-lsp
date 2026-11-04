@@ -27,6 +27,7 @@ from pygls.lsp.server import LanguageServer
 from salt_lsp import utils
 from salt_lsp.catalog import complete_states
 from salt_lsp.project import ProjectModel
+from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
 from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
@@ -289,7 +290,8 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
             )
 
     @server.feature(
-        COMPLETION, CompletionOptions(trigger_characters=["-", "."])
+        COMPLETION,
+        CompletionOptions(trigger_characters=["-", ".", "'", '"', "(", ","]),
     )
     def completions(
         salt_server: SaltServer, params: CompletionParams
@@ -309,6 +311,14 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                 params.text_document.uri
             )
             if context is not None:
+                document = salt_server.workspace.get_text_document(
+                    params.text_document.uri
+                )
+                result = complete_execution_calls(
+                    document, params.position, context.salt_version
+                )
+                if result is not None:
+                    return result
                 result = complete_states(
                     salt_server.workspace.get_text_document(
                         params.text_document.uri
@@ -384,7 +394,10 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         context = salt_server.workspace.project_context(uri)
         if context is None or uri not in salt_server.workspace.text_documents:
             return None
-        return hover_state_call(
+        document = salt_server.workspace.get_text_document(uri)
+        return hover_execution_call(
+            document, params.position, context.salt_version
+        ) or hover_state_call(
             salt_server.workspace.get_text_document(uri),
             params.position,
             context.salt_version,

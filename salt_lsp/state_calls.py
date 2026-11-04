@@ -255,8 +255,12 @@ def _call_under_cursor(
     return _Call(function, entry.start(3), entry.end(3))
 
 
-def _candidates(version: str, name: str) -> list[dict[str, Any]]:
-    return [e for e in load_catalog(version)["entries"] if e["name"] == name]
+def _candidates(
+    version: str, name: str, kind: str = "state"
+) -> list[dict[str, Any]]:
+    return [
+        e for e in load_catalog(version, kind)["entries"] if e["name"] == name
+    ]
 
 
 def _describe(entry: dict[str, Any], release: str) -> str:
@@ -267,7 +271,7 @@ def _describe(entry: dict[str, Any], release: str) -> str:
     )
     return (
         f"{format_signature(entry)}\n\n"
-        f"Salt {release} source-known state API ({provider}).\n{alias}"
+        f"Salt {release} source-known {entry['kind']} API ({provider}).\n{alias}"
         "Catalog membership is not proof of provider availability. "
         "Runtime gates/dependencies and decorators are not evaluated.\n\n"
         f"{documentation}"
@@ -431,7 +435,7 @@ def _argument_item(
         sort_text=f"{0 if required else 1}{position:04}",
         text_edit=edit,
         data={
-            "kind": "state-argument",
+            "kind": f"{declared_by[0][0]['kind']}-argument",
             "version": version,
             "function": function,
             "providers": [entry["provider"] for entry, _, _ in declared_by],

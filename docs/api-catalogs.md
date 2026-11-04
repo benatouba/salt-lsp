@@ -74,6 +74,35 @@ Limits:
   nothing under a state ID that begins with `{{` and can fire inside a multi-line
   tag.
 
+## Execution calls in Jinja
+
+Inside `{{ ... }}` expressions and `{% ... %}` tags of state files, these literal
+forms get function completion, hover and keyword-argument completion from the
+active profile's `modules-VERSION` catalog:
+
+```jinja
+{{ salt['cmd.run']('ls', cwd='/') }}
+{{ __salt__['file.replace'](...) }}
+{{ salt.cmd.run('ls') }}
+```
+
+`salt.` completes modules, `salt.cmd.` completes functions, and a name being
+typed at the start of an argument (after `(` or `,`) completes keyword names,
+hiding those already given. Hover shows the signature, exact release, provider
+path and line, and docstring. Several conditional providers are all listed.
+Catalog membership is not proof that a module loads on a minion.
+
+Spans are lexed in place and never rendered. Raw blocks and comments are
+ignored. Computed names (`salt[name]`, `salt['cmd.' ~ fn]`), unfinished
+strings or names missing from the catalog stay unknown and get no hover. An
+unclosed span ends with its line, so later states keep their assistance.
+
+Limits: only `salt` and `__salt__` are recognized (not aliases such as
+`{% set s = salt %}`, `salt['mod']['fn']`, `salt.mod['fn']`, `grains` or `pillar`
+objects); positional arguments, `**kwargs` names and keyword argument hover are
+not covered; Jinja outside state files is not assisted. The execution catalogs
+add about 2.2 MB to the package.
+
 ## Pins and provenance
 
 `tools/catalog-sources.json` locks official PyPI source distributions, their
@@ -101,8 +130,9 @@ Defaults are **source expressions**, never evaluated objects; `has_default`
 distinguishes a required argument from literal `None`. Positional-only,
 positional-or-keyword, keyword-only, variadic arguments and annotations survive.
 `kind + name + provider + line` identifies a candidate, not just `name`.
-This shared metadata shape leaves room for later execution/Jinja APIs; this
-ticket does not implement execution completion or custom-module indexing.
+Execution modules use the same shape with kind `execution`, generated from
+`salt/modules/` into `salt_lsp/catalogs/modules-VERSION.json.gz`. Custom-module
+indexing is not implemented here.
 
 ## Controlled regeneration (development only)
 

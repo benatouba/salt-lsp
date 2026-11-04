@@ -15,12 +15,15 @@ from lsprotocol import types
 from pygls.workspace import TextDocument
 
 
-@lru_cache(maxsize=3)
-def load_catalog(version: str) -> dict[str, Any]:
+@lru_cache(maxsize=6)
+def load_catalog(version: str, kind: str = "state") -> dict[str, Any]:
     """Read only packaged, version-specific metadata; no Salt or project imports."""
     if version not in ("3006", "3007", "3008"):
         raise ValueError(f"unsupported Salt catalog: {version}")
-    resource = files("salt_lsp").joinpath(f"catalogs/states-{version}.json.gz")
+    if kind not in ("state", "execution"):
+        raise ValueError(f"unsupported catalog kind: {kind}")
+    name = "states" if kind == "state" else "modules"
+    resource = files("salt_lsp").joinpath(f"catalogs/{name}-{version}.json.gz")
     return json.loads(gzip.decompress(resource.read_bytes()))
 
 
