@@ -38,7 +38,7 @@ dev = [
 packages = ["salt_lsp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/salt_lsp", "/tests", "/pyproject.toml", "/uv.lock", "/README.md", "/LICENSE", "/docs/project-configuration.md", "/docs/external-tools.md"]
+include = ["/salt_lsp", "/tests", "/tools", "/pyproject.toml", "/uv.lock", "/README.md", "/LICENSE", "/docs/project-configuration.md", "/docs/api-catalogs.md", "/docs/external-tools.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

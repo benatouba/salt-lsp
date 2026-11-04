@@ -1,0 +1,29 @@
+[
+  {
+    "profile": "3006",
+    "release": "3006.30",
+    "repository": "https://github.com/saltstack/salt",
+    "commit": "b037a58a115e56369f05c81ca9f5acb65eaf984a",
+    "artifact": "salt-3006.30.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/fa/f1/6372c5f4375ba8403fa6bf666a919a9ab5ec42ccf0a8da4fce3a7ba5caaa/salt-3006.30.tar.gz",
+    "sha256": "123a359e448643c3977141a75a3534a5a6638e3908b424a736285292f4e04db0"
+  },
+  {
+    "profile": "3007",
+    "release": "3007.17",
+    "repository": "https://github.com/saltstack/salt",
+    "commit": "6d6c1a9c8ff6c186af2e2d1577c2d68c2ac1016a",
+    "artifact": "salt-3007.17.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/0e/90/0d5d8df95f6949b2a8aecd82084796232fd1a5a076cc3cc6487bb9f3aa6e/salt-3007.17.tar.gz",
+    "sha256": "03c85d77ad4e9bc93877977ca68987b4b2a21cc9043e513cb2e40d96bbabd40b"
+  },
+  {
+    "profile": "3008",
+    "release": "3008.5",
+    "repository": "https://github.com/saltstack/salt",
+    "commit": "d4054cdd2ebb28e75bd39d1e06b0dcd295a7d629",
+    "artifact": "salt-3008.5.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/22/59/89f6c11ac3112244712c7085ff5af4811d8cfb3c475346f2ee69c5d6db52/salt-3008.5.tar.gz",
+    "sha256": "0259deafd601d783721e5aa8ed10677d8c4d6cc12f5de17499af71590d593315"
+  }
+]
