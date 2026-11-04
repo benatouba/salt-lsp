@@ -44,6 +44,7 @@ class SlsFileWorkspace(Workspace):
         self.projects = ProjectModel()
         self._document_sequence = 0
         self._document_stamps: dict[str, tuple[int, int | None]] = {}
+        self.on_change = lambda uri: None
 
         self.logger: Logger = getLogger(self.__class__.__name__)
         # FIXME: make this configurable
@@ -142,6 +143,7 @@ class SlsFileWorkspace(Workspace):
         )
 
         self._resolve_includes(text_document.uri)
+        self.on_change(str(uri))
 
     def _get_workspace_of_document(
         self, uri: Union[str, FileUri]
@@ -193,6 +195,7 @@ class SlsFileWorkspace(Workspace):
         self._document_symbols.pop(FileUri(doc_uri), None)
         self._trees.pop(FileUri(doc_uri), None)
         self._includes.pop(FileUri(doc_uri), None)
+        self.on_change(doc_uri)
 
     def put_text_document(
         self, text_document: types.TextDocumentItem, notebook_uri=None
