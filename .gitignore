@@ -144,3 +144,9 @@ devenv.local.yaml
 
 # Agent worktrees
 .claude/worktrees/
+
+# AI files
+HANDOFF.md
+AGENTS.md
+GLOSSARY.md
+docs/
