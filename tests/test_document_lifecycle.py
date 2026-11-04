@@ -249,13 +249,23 @@ def test_multiple_edits_incomplete_calls_and_reopen(
     symbols = client.symbols(uri)
     assert [s["name"] for s in symbols] == ["new😀"]
     assert symbols[0]["children"][0]["name"] == "file."
-    assert client.at(
+    completion = client.at(
         "completion",
         uri,
         1,
         7,
         context={"triggerKind": 2, "triggerCharacter": "."},
-    ) == {"isIncomplete": False, "items": []}
+    )
+    assert completion["isIncomplete"] is False
+    managed = next(i for i in completion["items"] if i["label"] == "managed")
+    assert managed["data"]["version"] == "3008"
+    assert managed["textEdit"] == {
+        "range": {
+            "start": {"line": 1, "character": 7},
+            "end": {"line": 1, "character": 7},
+        },
+        "newText": "managed",
+    }
     client.change(uri, 3, [{"text": "new😀:\n  file..managed: []\n"}])
     assert client.symbols(uri)[0]["children"][0]["name"] == "file..managed"
     client.change(uri, 4, [{"text": ""}])
