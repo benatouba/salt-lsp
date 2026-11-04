@@ -105,6 +105,16 @@ or ambiguous files are not guessed to be states. Settings never execute Salt,
 templates, or workspace Python. The portable JSON schema ships in
 [`salt_lsp/project.schema.json`](salt_lsp/project.schema.json).
 
+# Development
+
+`devenv.nix` declares the development environment; Salt is deliberately absent.
+`devenv shell` provides the locked dependencies, `yamlfmt`, Neovim and a
+pre-commit hook (managed by `prek`) that runs the test suite on every commit.
+
+- `check-static` runs Black, mypy and pylint.
+- `check-matrix` runs the tests and installed-artifact smoke sessions on every
+  supported Python, in fresh environments bound to the current checkout.
+
 # Clients
 
 ## VSCode
