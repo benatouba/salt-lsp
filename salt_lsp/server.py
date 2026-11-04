@@ -31,6 +31,7 @@ from salt_lsp.custom_definitions import definitions
 from salt_lsp.source_references import SourceView, at_reference
 from salt_lsp.requisite_targets import candidates as requisite_candidates
 from salt_lsp.diagnostics import DiagnosticService
+from salt_lsp.formatting import format_document
 from salt_lsp.project import ProjectModel, file_path
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
@@ -236,6 +237,10 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         """Expose the selected project/profile to any LSP editor."""
         context = server.workspace.project_context(params.uri)
         return context.to_lsp() if context else None
+
+    @server.feature(types.TEXT_DOCUMENT_FORMATTING)
+    async def formatting(params: types.DocumentFormattingParams):
+        return await format_document(server, params)
 
     @server.feature("salt/toolStatus")
     def tool_status(params):
