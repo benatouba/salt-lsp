@@ -3,7 +3,7 @@
 `textDocument/formatting` (including editor format-on-save) uses a separately
 installed **Google yamlfmt 0.21.0**. Select it in `salt.tools` and explicitly
 approve the displayed executable/config selection using `salt/authorizeTool`.
-Settings cannot grant trust. See `TOOLS.md` for the selection protocol.
+Settings cannot grant trust. See [EXTERNAL_TOOLS.md](EXTERNAL_TOOLS.md) for the selection protocol.
 
 Only open state-role documents in the active profile are supported. Input must
 be standard, marker-free YAML (at most 1 MiB). Any standard Jinja delimiter,

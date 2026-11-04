@@ -49,6 +49,7 @@ def builtin(workspace, document, context):
                 if (
                     not isinstance(key, yaml.ScalarNode)
                     or key.tag != "tag:yaml.org,2002:str"
+                    or key.end_mark.line != key.start_mark.line
                 ):
                     continue
                 name = key.value
