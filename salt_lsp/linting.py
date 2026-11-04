@@ -37,7 +37,7 @@ def findings(stdout, document):
             or len(item["message"]) > 8192
             or not isinstance(item.get("id"), (str, int))
             or item.get("severity")
-            not in ("LOW", "MEDIUM", "HIGH", "VERY_HIGH")
+            not in ("INFO", "LOW", "MEDIUM", "HIGH", "VERY_HIGH")
         ):
             raise ValueError
         line = item["linenumber"] - 1
@@ -54,7 +54,11 @@ def findings(stdout, document):
                 source="salt-lint",
                 code=str(item["id"]),
                 message=item["message"],
-                severity=types.DiagnosticSeverity.Warning,
+                severity=(
+                    types.DiagnosticSeverity.Information
+                    if item["severity"] == "INFO"
+                    else types.DiagnosticSeverity.Warning
+                ),
             )
         )
     return result

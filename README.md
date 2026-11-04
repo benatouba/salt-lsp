@@ -109,6 +109,11 @@ or ambiguous files are not guessed to be states. Settings never execute Salt,
 templates, or workspace Python. The portable JSON schema ships in
 [`salt_lsp/project.schema.json`](salt_lsp/project.schema.json).
 
+## Neovim acceptance
+
+See [NEOVIM.md](NEOVIM.md) for standard LSP setup, installed Salt-free headless
+checks, optional real-tool checks, and the interactive acceptance checklist.
+
 # Development
 
 `devenv.nix` declares the development environment; Salt is deliberately absent.
