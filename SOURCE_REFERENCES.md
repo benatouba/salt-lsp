@@ -1,5 +1,15 @@
 # Literal source lookup
 
+Requisite definitions search the current document and its bounded, live include
+closure, not unrelated workspace formulas. Literal IDs and `name`/`names` values
+are matched with the optional state-module qualifier. Wildcards return all
+matching declarations; `sls` targets select declarations from matching included
+formulas. Duplicate and conditional declarations are retained as candidates,
+never interpreted as a proven compiled state tree. Dynamic targets and missing
+or incomplete matches return no definition. Templates are only projected for
+source recognition, never rendered. Targets use the original document's ranges
+and negotiated position encoding.
+
 SLS includes and top-file entries use the active profile's ordered `stateRoots`
 or `pillarRoots`. Dotted names resolve to `name.sls` or `name/init.sls`; both
 candidates are retained if both exist in the first matching root. Leading dots
