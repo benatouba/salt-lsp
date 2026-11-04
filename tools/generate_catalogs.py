@@ -114,7 +114,7 @@ def read_archive(path, expected_hash):
     return sources
 
 
-def extract_module(path, source, sources):
+def extract_module(path, source, sources, kind="state"):
     tree = ast.parse(source, filename=path)
     nodes = list(statements(tree.body))
     values = {}
@@ -280,7 +280,7 @@ def extract_module(path, source, sources):
         for module in sorted(module_names):
             entries.append(
                 {
-                    "kind": "state",
+                    "kind": kind,
                     "name": f"{module}.{exposed}",
                     "module": module,
                     "function": exposed,
@@ -299,7 +299,8 @@ def extract_module(path, source, sources):
                     "returns": expression(node.returns),
                     "documentation": docs,
                     "decorators": [expression(d) for d in node.decorator_list],
-                    "authoring": not exposed.startswith("mod_"),
+                    "authoring": kind == "execution"
+                    or not exposed.startswith("mod_"),
                     "confidence": "source-declaration; runtime conditions not evaluated",
                 }
             )
@@ -374,11 +375,15 @@ def extract_module(path, source, sources):
     return entries, coverage
 
 
-def generate(pin, sources):
+KINDS = {"state": "salt/states/", "execution": "salt/modules/"}
+
+
+def generate(pin, sources, kind="state"):
+    prefix = KINDS[kind]
     entries = []
     coverage = []
     for path, source in sorted(sources.items()):
-        if not path.startswith("salt/states/"):
+        if not path.startswith(prefix):
             continue
         if PurePosixPath(path).name.startswith("_"):
             coverage.append(
@@ -389,12 +394,12 @@ def generate(pin, sources):
                 }
             )
             continue
-        extracted, report = extract_module(path, source, sources)
+        extracted, report = extract_module(path, source, sources, kind)
         entries.extend(extracted)
         coverage.append(report)
     return {
         "schema": SCHEMA,
-        "kind": "state",
+        "kind": kind,
         "provenance": pin,
         "generator": {
             "path": "tools/generate_catalogs.py",
@@ -408,7 +413,7 @@ def generate(pin, sources):
         "supporting_sources": [
             {"path": p, "sha256": digest(s)}
             for p, s in sorted(sources.items())
-            if not p.startswith("salt/states/")
+            if not p.startswith(prefix)
         ],
     }
 
@@ -427,24 +432,25 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     for pin in pins:
         sources = read_archive(args.archives / pin["artifact"], pin["sha256"])
-        catalog = generate(pin, sources)
-        data = (
-            json.dumps(
-                catalog,
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
+        for kind, name in (("state", "states"), ("execution", "modules")):
+            catalog = generate(pin, sources, kind)
+            data = (
+                json.dumps(
+                    catalog,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode()
+            buffer = io.BytesIO()
+            with gzip.GzipFile(
+                filename="", fileobj=buffer, mode="wb", mtime=0
+            ) as stream:
+                stream.write(data)
+            (args.output / f"{name}-{pin['profile']}.json.gz").write_bytes(
+                buffer.getvalue()
             )
-            + "\n"
-        ).encode()
-        buffer = io.BytesIO()
-        with gzip.GzipFile(
-            filename="", fileobj=buffer, mode="wb", mtime=0
-        ) as stream:
-            stream.write(data)
-        (args.output / f"states-{pin['profile']}.json.gz").write_bytes(
-            buffer.getvalue()
-        )
 
 
 if __name__ == "__main__":

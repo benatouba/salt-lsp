@@ -257,3 +257,34 @@ def test_generation_rejects_unverified_or_unsafe_source_archives(
         if unsafe == "hash"
         else "unsafe archive path" if unsafe != "link" else "regular file"
     ) in result.stderr
+
+
+def test_execution_catalog_is_generated_separately_from_states(tmp_path):
+    generate(
+        tmp_path,
+        {
+            "salt/modules/__init__.py": "",
+            "salt/modules/mod.py": (
+                "__virtualname__ = 'alias'\n"
+                "def __virtual__():\n    return __virtualname__\n"
+                "def run(cmd, *, shell=None):\n    '''Run it.'''\n"
+                "def _private():\n    pass\n"
+            ),
+            "salt/states/mod.py": "def present(name):\n    pass\n",
+        },
+    )
+    output = tmp_path / "output"
+    modules = json.loads(
+        gzip.decompress((output / "modules-fixture.json.gz").read_bytes())
+    )
+    states = json.loads(
+        gzip.decompress((output / "states-fixture.json.gz").read_bytes())
+    )
+
+    assert modules["kind"] == "execution"
+    assert [(e["kind"], e["name"]) for e in modules["entries"]] == [
+        ("execution", "alias.run")
+    ]
+    assert modules["entries"][0]["documentation"] == "Run it."
+    assert states["kind"] == "state"
+    assert [e["name"] for e in states["entries"]] == ["mod.present"]
