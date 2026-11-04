@@ -13,7 +13,12 @@ import pytest
 
 class StdioClient:
     def __init__(
-        self, root, folders=None, settings=None, stderr=subprocess.DEVNULL
+        self,
+        root,
+        folders=None,
+        settings=None,
+        stderr=subprocess.DEVNULL,
+        capabilities=None,
     ):
         self.process = subprocess.Popen(
             [sys.executable, "-m", "salt_lsp"],
@@ -54,7 +59,17 @@ class StdioClient:
                     {"uri": p.as_uri(), "name": p.name}
                     for p in (folders or [root])
                 ],
-                "capabilities": {},
+                "capabilities": (
+                    capabilities
+                    if capabilities is not None
+                    else {
+                        "textDocument": {
+                            "documentSymbol": {
+                                "hierarchicalDocumentSymbolSupport": True
+                            }
+                        }
+                    }
+                ),
                 "initializationOptions": {"salt": settings or {}},
             },
         )

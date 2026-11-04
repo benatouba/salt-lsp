@@ -219,6 +219,19 @@ def tree_to_document_symbols(
     if document is not None:
 
         def convert(symbol: types.DocumentSymbol) -> None:
+            # AST starts can include sequence dashes or quoted scalar syntax.
+            # Select the identifier in the original line, not that syntax.
+            line = symbol.selection_range.start.line
+            if line < len(document.lines):
+                label = "include" if symbol.name == "includes" else symbol.name
+                column = document.lines[line].find(
+                    label, symbol.selection_range.start.character
+                )
+                if column >= 0:
+                    symbol.selection_range = types.Range(
+                        types.Position(line, column),
+                        types.Position(line, column + len(label)),
+                    )
             symbol.range = document.position_codec.range_to_client_units(
                 document.lines, symbol.range
             )

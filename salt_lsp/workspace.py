@@ -15,6 +15,7 @@ from salt_lsp.base_types import CompletionsDict
 from salt_lsp.utils import UriDict, FileUri, is_valid_file_uri
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
+from salt_lsp.source_analysis import source_tree
 from salt_lsp.project import ProjectModel, ProjectContext
 from salt_lsp.source_references import SourceView
 
@@ -135,7 +136,9 @@ class SlsFileWorkspace(Workspace):
         self._trees[uri] = tree
 
         self._document_symbols[uri] = tree_to_document_symbols(
-            tree, self._state_name_completions, self.get_text_document(uri)
+            source_tree(self.get_text_document(uri).source),
+            self._state_name_completions,
+            self.get_text_document(uri),
         )
 
         self._resolve_includes(text_document.uri)

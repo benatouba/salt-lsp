@@ -466,6 +466,33 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
             return []
         if role(params.text_document.uri) != "state":
             return []
-        return salt_server.workspace.document_symbols.get(
+        symbols = salt_server.workspace.document_symbols.get(
             params.text_document.uri, []
         )
+        text_capabilities = salt_server.client_capabilities.text_document
+        symbol_capabilities = (
+            text_capabilities.document_symbol if text_capabilities else None
+        )
+        if (
+            symbol_capabilities
+            and symbol_capabilities.hierarchical_document_symbol_support
+        ):
+            return symbols
+        flattened = []
+
+        def flatten(items, parent=None):
+            for symbol in items:
+                flattened.append(
+                    types.SymbolInformation(
+                        name=symbol.name,
+                        kind=symbol.kind,
+                        location=types.Location(
+                            params.text_document.uri, symbol.range
+                        ),
+                        container_name=parent,
+                    )
+                )
+                flatten(symbol.children or [], symbol.name)
+
+        flatten(symbols)
+        return flattened

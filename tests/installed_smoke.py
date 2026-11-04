@@ -152,7 +152,13 @@ def smoke(command):
                                 ]
                             }
                         },
-                        "capabilities": {},
+                        "capabilities": {
+                            "textDocument": {
+                                "documentSymbol": {
+                                    "hierarchicalDocumentSymbolSupport": True
+                                }
+                            }
+                        },
                     },
                     1,
                 )

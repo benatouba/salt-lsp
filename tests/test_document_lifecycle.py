@@ -23,9 +23,13 @@ class StdioClient:
         self.messages = queue.Queue()
         self.request_id = 0
         threading.Thread(target=self._read, daemon=True).start()
-        capabilities = {}
+        capabilities = {
+            "textDocument": {
+                "documentSymbol": {"hierarchicalDocumentSymbolSupport": True}
+            }
+        }
         if encoding:
-            capabilities = {"general": {"positionEncodings": [encoding]}}
+            capabilities["general"] = {"positionEncodings": [encoding]}
         self.capabilities = self.request(
             "initialize",
             {
