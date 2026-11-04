@@ -30,6 +30,7 @@ from salt_lsp.custom_sources import discover
 from salt_lsp.custom_definitions import definitions
 from salt_lsp.source_references import SourceView, at_reference
 from salt_lsp.requisite_targets import candidates as requisite_candidates
+from salt_lsp.diagnostics import DiagnosticService
 from salt_lsp.project import ProjectModel, file_path
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
@@ -43,6 +44,8 @@ from salt_lsp.parser import (
 
 class SaltServer(LanguageServer):
     """Experimental language server for salt states"""
+
+    diagnostics: DiagnosticService
 
     LINE_START_REGEX = re.compile(r"^(\s*)\b", re.MULTILINE)
 
@@ -216,6 +219,8 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         """Set up custom workspace."""
         cast(SaltLspProto, server.protocol).setup_custom_workspace()
         server.workspace.projects = server.projects
+        server.diagnostics = DiagnosticService(server)
+        server.workspace.on_change = server.diagnostics.refresh
         options = params.initialization_options
         apply_settings(options if options is not None else {})
         server.window_log_message(
@@ -271,6 +276,11 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         }
         apply_settings(params.settings)
         server.workspace.invalidate_projects(previous)
+        server.diagnostics.refresh()
+
+    @server.feature(types.WORKSPACE_DID_CHANGE_WATCHED_FILES)
+    def watched_files_changed(_params):
+        server.diagnostics.refresh()
 
     def apply_settings(settings):
         if isinstance(settings, dict) and "salt" not in settings:
