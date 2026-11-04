@@ -770,4 +770,11 @@ def parse(document: str) -> Tree:
     :return: the generated AST
     :raises ValueException: for any other renderer but ``jinja|yaml``
     """
-    return Parser(document).parse()
+    parser = Parser(document)
+    try:
+        return parser.parse()
+    except (AttributeError, IndexError) as err:
+        # Token sequences from unrendered templates can outrun the node
+        # traversal. Keep what was recognized rather than losing the document.
+        log.debug(err)
+        return parser._tree

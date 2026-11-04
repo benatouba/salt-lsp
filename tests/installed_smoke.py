@@ -158,6 +158,7 @@ def smoke(command):
                 )
                 capabilities = response(1)["capabilities"]
                 assert capabilities["documentSymbolProvider"]
+                assert capabilities["hoverProvider"]
                 send("initialized", {})
                 uri = (root / "example.sls").as_uri()
                 send(
@@ -207,6 +208,29 @@ def smoke(command):
                     "character": 14,
                 }
                 assert managed["textEdit"]["newText"] == "managed"
+                send(
+                    "textDocument/hover",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 1, "character": 7},
+                    },
+                    8,
+                )
+                documented = response(8)["contents"]["value"]
+                assert documented.startswith("file.managed("), documented
+                assert "Salt 3008.5" in documented, documented
+                send(
+                    "textDocument/completion",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 2, "character": 6},
+                    },
+                    9,
+                )
+                arguments = {i["label"] for i in response(9)["items"]}
+                # The entry under the cursor is the one being edited: its own
+                # name stays available alongside the function's other arguments.
+                assert {"name", "source"} <= arguments, arguments
                 send("salt/projectContext", {"uri": uri}, 4)
                 context = response(4)
                 assert context["saltVersion"] == "3008"

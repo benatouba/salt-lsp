@@ -8,6 +8,8 @@ replace the module or function token, preserve existing suffixes/colons, and
 module insertion adds a dot when needed. State hooks (`mod_*`) remain in the
 metadata but are not ordinary authoring suggestions. Pillar, generic files,
 parameters, comments, includes and template expressions are not state keys.
+Hover and argument completion use the same catalog: see
+[below](#hover-and-argument-completion).
 
 Catalog membership is **known API information, not proof of provider
 availability** on any minion. Dependencies, OS, configuration, virtual hooks
@@ -18,6 +20,59 @@ profile switch selects the new version on the next request without reopening.
 3007 compatibility does **not** mean ongoing upstream support. Consult the
 [upstream lifecycle policy](https://docs.saltproject.io/salt/install-guide/en/latest/topics/salt-version-support-lifecycle.html)
 independently of this static metadata.
+
+## Hover and argument completion
+
+`textDocument/hover` on a state call shows the signature, the exact release, the
+provider path and line, and the catalog documentation as plain text, because the
+docstrings are reStructuredText. A function with several conditional providers
+shows every candidate: the server doesn't pick one. Argument defaults are source
+expressions, and a function the docstring leaves undocumented says so.
+
+Completion at a list entry directly under a call, such as `- sou` or `- `, offers
+that function's argument names. The edit replaces only the name, adds `: ` when
+no colon follows and adds the missing space after a bare `-`. Required arguments
+sort first. Names already used in the same call aren't offered, except the entry
+being edited. If a function has several providers, each name lists the providers
+that declare it.
+
+Both recognize these literal forms, under a state ID or under `extend`:
+
+```yaml
+one:
+  file.managed:        # also with an indentless list, or before the colon is typed
+    - name: /tmp/a
+two:
+  file:                # hover works on the key and on `managed`
+    - managed
+    - name: /tmp/b
+three: file.managed    # hover only
+```
+
+Templates are lexed, never rendered. A generated state ID (`{{ id }}:`) still has
+a literal call beneath it, and control lines between arguments are ignored. Text
+inside a multi-line tag, a comment or a captured block (`{% load_yaml %}`,
+`{% set x %}`) is not state source, so it gets no assistance. An unclosed tag ends
+with its line, so it can't disable later states.
+
+Unknown stays quiet. The response is empty, not an error, for a function missing
+from the active catalog, a module key without exactly one known function, a
+templated call name, nested data, block scalars, flow-style lists, and pillar,
+generic and top files.
+
+Limits:
+
+- Only arguments named in the source signature are offered. Requisites, global
+  state arguments such as `order`, and names accepted through `**kwargs` aren't
+  listed, which is why `module.run` offers nothing.
+- Argument documentation is extracted from docstrings by recognizing their common
+  layouts: about 84-86% of named arguments per catalog. The rest are offered with
+  no documentation rather than a guess.
+- Arguments in both branches of an `{% if %}` count as already specified.
+- Hover covers the call, not individual argument names.
+- Function-name completion (`file.`) doesn't use this template handling. It offers
+  nothing under a state ID that begins with `{{` and can fire inside a multi-line
+  tag.
 
 ## Pins and provenance
 
