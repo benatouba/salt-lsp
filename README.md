@@ -63,7 +63,8 @@ Stdout contains only Content-Length-framed JSON-RPC; logging goes to stderr,
 not into the user's workspace. `--log-level warning` reduces logging. TCP mode
 (`--tcp --host 127.0.0.1 --port 2087`) remains available for development only.
 
-Offline state-function completion uses **packaged versioned API catalogs** for
+Offline state-function completion, hover and argument completion use **packaged
+versioned API catalogs** for
 Salt 3006, 3007, and 3008, selected per document's active profile (default 3008).
 This is known source API information, **not proof of provider availability** or
 a detected runtime. Catalog compatibility does not imply ongoing upstream
@@ -91,8 +92,8 @@ uv run --locked pytest
 
 The dependency-free smoke probe asserts Salt is absent, launches from an empty
 temporary directory with `PYTHONPATH` removed, exchanges real initialize,
-didOpen, document-symbol, completion, shutdown and exit messages, checks a
-known symbol, packaged catalog completion and live profile switching, and requires a clean exit
+didOpen, document-symbol, completion, hover, shutdown and exit messages, checks a
+known symbol, packaged catalog completion, hover and argument completion, and live profile switching, and requires a clean exit
 without workspace writes. Each response and process exit has a timeout.
 
 ## Project configuration

@@ -26,6 +26,7 @@ from pygls.lsp.server import LanguageServer
 from salt_lsp import utils
 from salt_lsp.catalog import complete_states
 from salt_lsp.project import ProjectModel
+from salt_lsp.state_calls import complete_arguments, hover_state_call
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
@@ -236,8 +237,9 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         if role(params.text_document.uri) not in ("state", "state-top"):
             return None
         if (
-            tree := salt_server.workspace.trees.get(params.text_document.uri)
-        ) is None:
+            params.text_document.uri
+            not in salt_server.workspace.text_documents
+        ):
             return None
         if role(params.text_document.uri) == "state":
             context = salt_server.workspace.project_context(
@@ -251,9 +253,21 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                     params.position,
                     context.salt_version,
                 )
+                if result is None:
+                    result = complete_arguments(
+                        salt_server.workspace.get_text_document(
+                            params.text_document.uri
+                        ),
+                        params.position,
+                        context.salt_version,
+                    )
                 if result is not None:
                     return result
 
+        if (
+            tree := salt_server.workspace.trees.get(params.text_document.uri)
+        ) is None:
+            return None
         path = utils.construct_path_to_position(
             tree,
             params.position,
@@ -295,6 +309,23 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                 ],
             )
         return None
+
+    @server.feature(types.TEXT_DOCUMENT_HOVER)
+    def hover(
+        salt_server: SaltServer, params: types.HoverParams
+    ) -> Optional[types.Hover]:
+        """Document the state call under the cursor from the active catalog."""
+        uri = params.text_document.uri
+        if not utils.is_valid_file_uri(uri) or role(uri) != "state":
+            return None
+        context = salt_server.workspace.project_context(uri)
+        if context is None or uri not in salt_server.workspace.text_documents:
+            return None
+        return hover_state_call(
+            salt_server.workspace.get_text_document(uri),
+            params.position,
+            context.salt_version,
+        )
 
     @server.feature(DEFINITION)
     def goto_definition(
