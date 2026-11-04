@@ -37,7 +37,7 @@ def state_key(document: TextDocument, position: types.Position):
         lines, types.Position(position.line, position.character)
     )
     line = lines[point.line].rstrip("\r\n")
-    match = re.fullmatch(r"( +)([A-Za-z_][\w.]*)?(:\s*(?:#.*)?)?\s*", line)
+    match = re.fullmatch(r"( +)([A-Za-z_][\w.]*)?(?::.*)?\s*", line)
     if not match:
         return None
     indent = len(match[1])

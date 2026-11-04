@@ -43,6 +43,33 @@ def test_offline_function_documentation_and_replacement(tmp_path, clients):
     assert "managed" in managed["documentation"].lower()
 
 
+def test_partial_key_with_inline_arguments_preserves_existing_value(
+    tmp_path, clients
+):
+    client = clients(
+        tmp_path,
+        settings={
+            "projects": [
+                {
+                    "root": tmp_path.as_uri(),
+                    "profiles": {"default": {"stateRoots": ["."]}},
+                }
+            ]
+        },
+    )
+    path = tmp_path / "inline.sls"
+    client.open(path, "😀:\r\n  file.man: [{name: /tmp/example}]\r\n")
+    result = complete(client, path, character=10)
+    managed = next(i for i in result["items"] if i["label"] == "managed")
+    assert managed["textEdit"] == {
+        "range": {
+            "start": {"line": 1, "character": 7},
+            "end": {"line": 1, "character": 10},
+        },
+        "newText": "managed",
+    }
+
+
 def test_partial_modules_insert_dot_without_doubling_existing_suffix(
     tmp_path, clients
 ):
