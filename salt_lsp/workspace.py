@@ -40,6 +40,8 @@ class SlsFileWorkspace(Workspace):
 
         self._state_name_completions = state_name_completions
         self.projects = ProjectModel()
+        self._document_sequence = 0
+        self._document_stamps: dict[str, tuple[int, int | None]] = {}
 
         self.logger: Logger = getLogger(self.__class__.__name__)
         # FIXME: make this configurable
@@ -129,6 +131,15 @@ class SlsFileWorkspace(Workspace):
         except ValueError:
             return None
 
+    def document_stamp(self, uri: str) -> tuple[int, int | None] | None:
+        """Opaque lifetime/version stamp for async tool providers.
+
+        Unlike an LSP version integer this cannot match a close/reopen or an
+        accepted same-version update. None means no live tracked document.
+        Capture this plus project_context before work; compare before publishing.
+        """
+        return self._document_stamps.get(uri)
+
     def invalidate_projects(self, previous: dict) -> None:
         """Refresh only documents whose immutable analysis context changed."""
         changed = [
@@ -156,6 +167,11 @@ class SlsFileWorkspace(Workspace):
     ) -> None:
         self.logger.debug("updating document '%s'", text_document.uri)
         uri = text_document.uri
+        self._document_sequence += 1
+        self._document_stamps[uri] = (
+            self._document_sequence,
+            self.get_text_document(uri).version,
+        )
         tree = parse(self.get_text_document(uri).source)
         self._trees[uri] = tree
 
@@ -210,6 +226,7 @@ class SlsFileWorkspace(Workspace):
     def remove_text_document(self, doc_uri: str) -> None:
         if not is_valid_file_uri(doc_uri):
             return
+        self._document_stamps.pop(doc_uri, None)
         super().remove_text_document(doc_uri)
         self._document_symbols.pop(FileUri(doc_uri), None)
         self._trees.pop(FileUri(doc_uri), None)

@@ -1,5 +1,9 @@
 # Projects and active profiles
 
+Optional executable/config selection is documented separately in
+[external-tools.md](external-tools.md). `salt.tools` settings select subjects;
+they never grant execution trust.
+
 Salt LSP uses the same JSON settings in every editor. Send the object below as
 `initialize.initializationOptions`, or as `workspace/didChangeConfiguration`
 `params.settings`. No editor extension or Salt installation is required.

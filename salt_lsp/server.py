@@ -3,6 +3,7 @@ Language Server Protocol implementation
 """
 
 import logging
+import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
@@ -27,6 +28,7 @@ from salt_lsp import utils
 from salt_lsp.catalog import complete_states
 from salt_lsp.project import ProjectModel
 from salt_lsp.state_calls import complete_arguments, hover_state_call
+from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
@@ -43,6 +45,9 @@ class SaltServer(LanguageServer):
     LINE_START_REGEX = re.compile(r"^(\s*)\b", re.MULTILINE)
 
     def __init__(self) -> None:
+        # pygls INFO serializes outbound RPC payloads (including diagnostics,
+        # completion documentation and trust tokens). Never log those payloads.
+        logging.getLogger("pygls").setLevel(logging.WARNING)
         super().__init__("salt-lsp", "0.0.1", protocol_cls=SaltLspProto)
 
         self._state_name_completions: Dict[str, StateNameCompletion] = {}
@@ -50,6 +55,45 @@ class SaltServer(LanguageServer):
         self.logger: logging.Logger = logging.getLogger()
         self._state_names: List[str] = []
         self.projects = ProjectModel()
+        self.exit_process_on_shutdown = False
+        self._reporting_error = False
+        self.tools = ToolService(
+            lambda uri: self.workspace.project_context(uri),
+            lambda: [
+                *self.projects.project_roots,
+                *(utils.FileUri(uri).path for uri in self.workspace.folders),
+                *(
+                    [utils.FileUri(self.workspace.root_uri).path]
+                    if self.workspace.root_uri
+                    else []
+                ),
+            ],
+        )
+
+    def report_server_error(self, error, source) -> None:
+        """Do not answer a failed send with another send.
+
+        Reporting goes through the same closed stream once the client is gone,
+        and without this guard recurses until the interpreter's limit.
+        """
+        if self._reporting_error:
+            return
+        self._reporting_error = True
+        try:
+            super().report_server_error(error, source)
+        finally:
+            self._reporting_error = False
+
+    def shutdown(self) -> None:
+        """Optionally end the process, once the event loop has unwound.
+
+        pygls joins its stdin reader here, which blocks until the client closes
+        stdin. A server told to stop must not wait for that.
+        """
+        if self.exit_process_on_shutdown:
+            logging.shutdown()
+            os._exit(0)
+        super().shutdown()
 
     @property
     def workspace(self) -> SlsFileWorkspace:
@@ -89,10 +133,9 @@ class SaltServer(LanguageServer):
         if last_match is None:
             self.logger.debug(
                 "expected to find whitespace before the position (%d, %d) "
-                "but got no regex match for the document: %s",
+                "but got no regex match",
                 params.position.line,
                 params.position.character,
-                contents,
             )
             return []
         state_name = contents[last_match.span()[1] : ind - 1]
@@ -111,11 +154,7 @@ class SaltServer(LanguageServer):
         `starting_uri`. If it does not find it in there, then it will continue
         to search in the includes and returns the first match that it finds.
         """
-        self.logger.debug(
-            "Request to find id '%s' starting in uri '%s'",
-            id_to_find,
-            starting_uri,
-        )
+        self.logger.debug("Request to find an id from uri '%s'", starting_uri)
         if not utils.is_valid_file_uri(starting_uri):
             return None
         if (tree := self.workspace.trees.get(starting_uri)) is None:
@@ -189,6 +228,24 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         context = server.workspace.project_context(params.uri)
         return context.to_lsp() if context else None
 
+    @server.feature("salt/toolStatus")
+    def tool_status(params):
+        return server.tools.inspect(params.uri, params.tool)
+
+    @server.feature("salt/toolProbe")
+    async def tool_probe(params):
+        return await server.tools.probe(params.uri, params.tool)
+
+    @server.feature("salt/authorizeTool")
+    def authorize_tool(params):
+        return server.tools.authorize(
+            params.uri, params.tool, params.token, params.action
+        )
+
+    @server.feature(types.SHUTDOWN)
+    async def shutdown_tools(*_args):
+        await server.tools.close()
+
     def project_folders():
         folders = list(server.workspace.folders)
         if not folders and server.workspace.root_uri:
@@ -214,8 +271,14 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
     def apply_settings(settings):
         if isinstance(settings, dict) and "salt" not in settings:
             return
-        errors = server.projects.configure(
-            settings.get("salt", {}) if isinstance(settings, dict) else None,
+        salt = settings.get("salt", {}) if isinstance(settings, dict) else None
+        if isinstance(salt, dict):
+            errors = server.tools.configure(salt.get("tools", []))
+            salt = {k: v for k, v in salt.items() if k != "tools"}
+        else:
+            errors = server.tools.configure([])
+        errors += server.projects.configure(
+            salt,
             project_folders(),
         )
         for error in errors:

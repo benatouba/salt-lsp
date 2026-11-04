@@ -12,12 +12,14 @@ import pytest
 
 
 class StdioClient:
-    def __init__(self, root, folders=None, settings=None):
+    def __init__(
+        self, root, folders=None, settings=None, stderr=subprocess.DEVNULL
+    ):
         self.process = subprocess.Popen(
             [sys.executable, "-m", "salt_lsp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr,
         )
         self.messages = queue.Queue()
         self.notifications = []

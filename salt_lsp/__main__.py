@@ -1,5 +1,7 @@
 import argparse
 import logging
+import signal
+import sys
 from typing import Dict
 
 from salt_lsp.server import SaltServer, setup_salt_server_capabilities
@@ -69,9 +71,14 @@ def main():
     if args.stop_after_init:
         return
 
+    # Editors stop servers with SIGTERM. Unwinding through the event loop lets
+    # cancellation clean up any running external-tool process group.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
     if args.tcp:
         salt_server.start_tcp(args.host, args.port)
     else:
+        salt_server.exit_process_on_shutdown = True
         salt_server.start_io()
 
 
