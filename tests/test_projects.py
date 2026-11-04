@@ -554,7 +554,18 @@ def test_include_completion_uses_only_active_state_roots_not_top_or_project_root
             "position": {"line": 1, "character": 4},
         },
     )
-    assert result["items"] == [{"label": " known"}]
+    assert result["items"] == [
+        {
+            "label": "known",
+            "textEdit": {
+                "range": {
+                    "start": {"line": 1, "character": 4},
+                    "end": {"line": 1, "character": 4},
+                },
+                "newText": "known",
+            },
+        }
+    ]
 
 
 def test_explicit_external_content_roots_keep_project_identity(

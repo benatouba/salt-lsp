@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from functools import wraps
-from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import Dict, List, Optional, Tuple, Union, cast
 
 from lsprotocol import types
 from lsprotocol.types import (
@@ -17,7 +17,6 @@ from lsprotocol.types import (
     TEXT_DOCUMENT_DOCUMENT_SYMBOL as DOCUMENT_SYMBOL,
 )
 from lsprotocol.types import (
-    CompletionItem,
     CompletionList,
     CompletionOptions,
     CompletionParams,
@@ -29,17 +28,16 @@ from salt_lsp import utils
 from salt_lsp.catalog import complete_states, project_catalog
 from salt_lsp.custom_sources import discover
 from salt_lsp.custom_definitions import definitions
-from salt_lsp.project import ProjectModel
+from salt_lsp.source_references import SourceView, at_reference
+from salt_lsp.project import ProjectModel, file_path
 from salt_lsp.jinja_calls import complete_execution_calls, hover_execution_call
 from salt_lsp.state_calls import complete_arguments, hover_state_call
 from salt_lsp.tools import ToolService
 from salt_lsp.base_types import StateNameCompletion, SLS_LANGUAGE_ID
 from salt_lsp.workspace import SaltLspProto, SlsFileWorkspace
 from salt_lsp.parser import (
-    IncludesNode,
     RequisiteNode,
-    StateParameterNode,
-    Tree,
+    parse,
 )
 
 
@@ -167,19 +165,21 @@ class SaltServer(LanguageServer):
             )
             return None
 
-        inc_of_uri = self.workspace.includes.get(starting_uri, [])
+        context = self.workspace.project_context(starting_uri)
 
         # FIXME: need to take ordering into account:
         # https://docs.saltproject.io/en/latest/ref/states/compiler_ordering.html#the-include-statement
-        trees_and_uris_to_search: Sequence[
-            Tuple[Tree, Union[str, utils.FileUri]]
-        ] = [(tree, starting_uri)] + [
-            (t, inc)
-            for inc in inc_of_uri
-            if (t := self.workspace.trees.get(inc)) is not None
-        ]
+        view = SourceView(self.workspace, context) if context else None
+        trees_and_uris_to_search = (
+            [
+                (parse(document.source), path.as_uri(), document)
+                for path, document in view.closure(file_path(starting_uri))
+            ]
+            if view
+            else []
+        )
 
-        for tree, uri in trees_and_uris_to_search:
+        for tree, uri, document in trees_and_uris_to_search:
             self.logger.debug("Searching in '%s'", uri)
             matching_states = [
                 state
@@ -192,7 +192,7 @@ class SaltServer(LanguageServer):
             if (
                 lsp_range := utils.ast_node_to_range(
                     matching_states[0],
-                    self.workspace.get_text_document(str(uri)),
+                    document,
                 )
             ) is not None:
                 self.logger.debug(
@@ -317,13 +317,33 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         """Returns completion items."""
         if not utils.is_valid_file_uri(params.text_document.uri):
             return None
-        if role(params.text_document.uri) not in ("state", "state-top"):
+        if role(params.text_document.uri) not in (
+            "state",
+            "state-top",
+            "pillar",
+            "pillar-top",
+        ):
             return None
         if (
             params.text_document.uri
             not in salt_server.workspace.text_documents
         ):
             return None
+        context = salt_server.workspace.project_context(
+            params.text_document.uri
+        )
+        if context:
+            reference_result = at_reference(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(
+                    params.text_document.uri
+                ),
+                params.position,
+                context,
+                completion=True,
+            )
+            if reference_result is not None:
+                return reference_result
         if role(params.text_document.uri) == "state":
             context = salt_server.workspace.project_context(
                 params.text_document.uri
@@ -355,50 +375,6 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
                 if result is not None:
                     return result
 
-        if (
-            tree := salt_server.workspace.trees.get(params.text_document.uri)
-        ) is None:
-            return None
-        path = utils.construct_path_to_position(
-            tree,
-            params.position,
-            salt_server.workspace.get_text_document(params.text_document.uri),
-        )
-        if path and (
-            isinstance(path[-1], IncludesNode)
-            or role(params.text_document.uri) == "state-top"
-            and isinstance(path[-1], StateParameterNode)
-        ):
-            context = salt_server.workspace.project_context(
-                params.text_document.uri
-            )
-            assert context is not None
-            includes = set()
-            for root in context.state_roots:
-                for candidate in root.rglob("*.sls"):
-                    selected = salt_server.workspace.project_context(
-                        candidate.as_uri()
-                    )
-                    if (
-                        not candidate.resolve().is_relative_to(root)
-                        or selected is None
-                        or selected.project_root != context.project_root
-                        or selected.file_role != "state"
-                    ):
-                        continue
-                    relative = candidate.relative_to(root).with_suffix("")
-                    if relative.name == "init":
-                        relative = relative.parent
-                    name = ".".join(relative.parts)
-                    if name:
-                        includes.add(name)
-            return CompletionList(
-                is_incomplete=False,
-                items=[
-                    CompletionItem(label=f" {include}")
-                    for include in sorted(includes)
-                ],
-            )
         return None
 
     @server.feature(types.TEXT_DOCUMENT_HOVER)
@@ -430,10 +406,20 @@ def setup_salt_server_capabilities(server: SaltServer) -> None:
         uri = params.text_document.uri
         if not utils.is_valid_file_uri(uri):
             return None
-        if role(uri) != "state":
+        if role(uri) not in ("state", "pillar", "state-top", "pillar-top"):
             return None
         context = salt_server.workspace.project_context(uri)
         if context and uri in salt_server.workspace.text_documents:
+            locations = at_reference(
+                salt_server.workspace,
+                salt_server.workspace.get_text_document(uri),
+                params.position,
+                context,
+            )
+            if locations:
+                return locations
+            if role(uri) != "state":
+                return None
             locations = definitions(
                 salt_server.workspace,
                 salt_server.workspace.get_text_document(uri),

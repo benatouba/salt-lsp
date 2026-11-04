@@ -11,11 +11,12 @@ from lsprotocol import types
 from pygls.protocol import LanguageServerProtocol
 from pygls.workspace import Workspace
 
-from salt_lsp.base_types import CompletionsDict, SLS_LANGUAGE_ID
+from salt_lsp.base_types import CompletionsDict
 from salt_lsp.utils import UriDict, FileUri, is_valid_file_uri
 from salt_lsp.parser import parse, Tree
 from salt_lsp.document_symbols import tree_to_document_symbols
 from salt_lsp.project import ProjectModel, ProjectContext
+from salt_lsp.source_references import SourceView
 
 
 class SlsFileWorkspace(Workspace):
@@ -69,57 +70,15 @@ class SlsFileWorkspace(Workspace):
     def _resolve_includes(
         self, text_document_uri: Union[str, FileUri]
     ) -> None:
-        self._includes[text_document_uri] = []
-        if (
-            (tree := self._trees[text_document_uri]) is None
-            or tree.includes is None
-            or len(tree.includes.includes) == 0
-        ):
-            return
-
         context = self.project_context(str(text_document_uri))
-        if context is None or context.file_role != "state":
-            return
-        self._includes[text_document_uri] = [
-            FileUri(f)
-            for incl in tree.includes.includes
-            for root in context.state_roots
-            if (f := incl.get_file(str(root))) is not None
-            and Path(f).resolve().is_relative_to(root)
-            and (selected := self.project_context(str(FileUri(f)))) is not None
-            and selected.project_root == context.project_root
-            and selected.file_role == "state"
-        ]
-
-        new_includes = self._includes[text_document_uri]
-
-        # now try to re-read all the trees if they are not present:
-        for inc in self._includes[text_document_uri]:
-            if inc not in self._trees:
-                self.logger.debug(
-                    "Adding file '%s' via includes of '%s'",
-                    inc,
-                    text_document_uri,
-                )
-                with open(inc.path, "r") as inc_file:
-                    self.put_text_document(
-                        types.TextDocumentItem(
-                            uri=str(inc),
-                            language_id=SLS_LANGUAGE_ID,
-                            version=0,
-                            text=inc_file.read(-1),
-                        )
-                    )
-
-            if inc in self._trees and self._includes.get(inc):
-                new_includes += [
-                    uri
-                    for uri in self._includes[inc]
-                    if uri not in new_includes
-                ]
-
-        assert len(new_includes) >= len(self._includes[text_document_uri])
-        self._includes[text_document_uri] = new_includes
+        self._includes[text_document_uri] = []
+        if context is not None and context.file_role in ("state", "pillar"):
+            origin = Path(FileUri(text_document_uri).path).resolve()
+            self._includes[text_document_uri] = [
+                FileUri(path.as_uri())
+                for path, _ in SourceView(self, context).closure(origin)
+                if path != origin
+            ]
 
     def project_context(self, uri: str) -> Optional[ProjectContext]:
         """Public selection seam shared by language providers."""
