@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import secrets
+import stat
 import tempfile
 from typing import Callable
 
@@ -85,11 +86,16 @@ def safe_route(path, roots):
         candidate = current / part
         if inside(candidate):
             return False
+        # Not Path.is_symlink: from Python 3.14 it reports every error as False,
+        # which would make a component we cannot inspect look like a safe one.
         try:
-            if not candidate.is_symlink():
+            if not stat.S_ISLNK(os.lstat(candidate).st_mode):
                 current = candidate
                 continue
             target = Path(os.readlink(candidate))
+        except (FileNotFoundError, NotADirectoryError):
+            current = candidate
+            continue
         except OSError:
             return False
         hops += 1
